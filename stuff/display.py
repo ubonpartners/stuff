@@ -21,7 +21,7 @@ def window_mouse_callback(event, x, y, flags, display):
         display.events.append(event)
 
 class Display:
-    def __init__(self, width=1920, height=1080, image=None, name="noname"):
+    def __init__(self, width=1920, height=1080, image=None, name="noname", output=None):
         self.width=width
         self.height=height
         self.window_name=name
@@ -31,13 +31,29 @@ class Display:
         self.overlay_back=np.zeros((self.height, self.width, 4), np.uint8)
         if image is None:
             image=np.zeros((self.height, self.width, 3), np.uint8)
+
+        self.writer=None
+        if output is not None:
+            print(f"Writing display output to {output} with {width}x{height}x30fps")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            self.writer = cv2.VideoWriter(output, fourcc, 30.0, (width, height))
+
         self.show(image)
 
         cv2.imshow(self.window_name, image)
         cv2.setMouseCallback(self.window_name, window_mouse_callback, self)
 
+    def close(self):
+        print("Destroying display")
+        if self.writer is not None:
+            self.writer.release()
+            self.writer=None
+        if self.window_name is not None:
+            cv2.destroyWindow(self.window_name)
+            self.window_name=None
+
     def __del__(self):
-        cv2.destroyWindow(self.window_name)
+        self.close()
 
     def selected_boxes(self, pt):
         best_boxes=[]
@@ -89,6 +105,9 @@ class Display:
         cv2.imshow(self.window_name, blended)
         if title is not None:
             cv2.setWindowTitle(self.window_name, title)
+
+        if self.writer is not None:
+            self.writer.write(blended)
 
     def get_events(self, delay_ms):
         r=cv2.waitKey(delay_ms)  # Press any key to move to the next image

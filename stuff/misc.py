@@ -82,3 +82,13 @@ def save_atomic_pickle(data, filename):
     with open(temp_filename, 'wb') as handle:
         pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
         rename(temp_filename, filename) # atomic, replaces any existing file
+
+def timestr(delta):
+    delta=int(delta)
+    s=delta%60
+    m=(delta//60)%60
+    h=delta//3600
+    r=f"{m:02d}:{s:02d}"
+    if h!=0:
+        r=f"{h:02d}:"+r
+    return r
