@@ -246,7 +246,7 @@ def yolo_results_to_dets(results,
                         "facepose_points":copy.copy(d["facepose_points"])}
                     max_iou=0
                     for f in faces:
-                        max_iou=max(max_iou, box_iou(face_box, f["box"]))
+                        max_iou=max(max_iou, coord.box_iou(face_box, f["box"]))
                     if max_iou<0.5:
                         faces.append(det)
 
@@ -299,7 +299,7 @@ def yolo_results_to_dets(results,
                 if num>=2:
                     p_index.append(i)
                 else:
-                    if pose_area_limit is not None and box_a(d["box"])>pose_area_limit:
+                    if pose_area_limit is not None and coord.box_a(d["box"])>pose_area_limit:
                         d["confidence"]=0
         if pose_expand is not None:
             for i in p_index:
@@ -322,13 +322,13 @@ def yolo_results_to_dets(results,
                 for m in range(n+1, len(p_index)):
                     j=p_index[m]
                     d2=out_det[j]
-                    ioma=box_ioma(d["box"],d2["box"])
+                    ioma=coord.box_ioma(d["box"],d2["box"])
                     if ioma==0:
                         continue
                     #if ioma>0.9:
                     #    d2["confidence"]=0
                     #    continue
-                    iou=kp_iou2(d["pose_points"], d2["pose_points"], max(box_a(d["box"]), box_a(d2["box"])), len(d["pose_points"])//3)
+                    iou=kp_iou2(d["pose_points"], d2["pose_points"], max(coord.box_a(d["box"]), coord.box_a(d2["box"])), len(d["pose_points"])//3)
                     #print(d["pose_points"])
                     #print(d2["pose_points"])
                     #print(box_iou(d["box"],d2["box"]), iou, len(d["pose_points"])//3)
@@ -357,7 +357,7 @@ def yolo_results_to_dets(results,
                     d2=out_det[j]
                     if d["confidence"]==0:
                         continue
-                    if d2["class"]==person_class and box_iou(d["box"],d2["box"])>nms_iou:
+                    if d2["class"]==person_class and coord.box_iou(d["box"],d2["box"])>nms_iou:
                         d2["confidence"]=0
 
         out_det2=[]
