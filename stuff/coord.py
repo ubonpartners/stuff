@@ -1,3 +1,5 @@
+import copy
+
 def clip01(x):
     if x<0:
         return 0
@@ -65,12 +67,26 @@ def box_iou(b1, b2):
         float iou
     """
     iw=max(0, min(b1[2],b2[2])-max(b1[0],b2[0]))
+    if iw==0:
+        return 0
     ih=max(0, min(b1[3],b2[3])-max(b1[1],b2[1]))
     ai=iw*ih
+    if ai==0:
+        return 0
     a1=(b1[2]-b1[0])*(b1[3]-b1[1])
     a2=(b2[2]-b2[0])*(b2[3]-b2[1])
     iou=(iw*ih)/(a1+a2-ai+1e-7)
     return iou
+
+def box_iou_relaxed_person(b1, b2):
+    iou=box_iou(b1,b2)
+    if iou==0:
+        return 0
+    b1m=copy.copy(b1)
+    b2m=copy.copy(b2)
+    b1m[3]=min(b1[3], b1[1]+b1[2]-b1[0])
+    b2m[3]=min(b2[3], b2[1]+b1[2]-b1[0])
+    return 0.5*iou+0.5*box_iou(b1m, b2m)
 
 def box_ioma(b1, b2):
     """
@@ -99,6 +115,15 @@ def point_in_box(pt, box):
     d=abs(pt[0]-0.5*(box[0]+box[2]))
     d+=abs(pt[1]-0.5*(box[1]+box[3]))
     return d
+
+def interpolate2(x, y, f):
+    if isinstance(x, float) or isinstance(x, int):
+        return (1.0-f)*x+f*y
+    if isinstance(x, list):
+        assert len(x)==len(y)
+        return [(1.0-f)*x[i]+f*y[i] for i in range(len(x))]
+    print("interpolate: unsupported type")
+    exit()
 
 def interpolate(x, y, f):
     if isinstance(x, float) or isinstance(x, int):
