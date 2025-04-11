@@ -368,7 +368,7 @@ def yolo_results_to_dets(results,
 
     return out_det
 
-def kp_line(display, kp, pts, thickness=2):
+def kp_line(display, kp, pts, thickness=2, clr="half_blue"):
     a=pts[0]
     b=pts[1]
     c=None
@@ -392,7 +392,26 @@ def kp_line(display, kp, pts, thickness=2):
             return
         x1=0.5*(x1+x2)
         y1=0.5*(y1+y2)
-    display.draw_line([x0,y0], [x1,y1], "half_blue", thickness=thickness)
+    display.draw_line([x0,y0], [x1,y1], clr, thickness=thickness)
+
+def draw_pose(display, kp=None, pose_pos=None, pose_conf=None, thickness=2, clr="half_blue"):
+    if kp is None:
+        assert pose_pos is not None, "one of kp and pose_pos,conf needs to be set"
+        n=len(pose_conf)
+        kp=[0]*3*n
+        for i in range(n):
+            kp[3*i+0]=pose_pos[i][0]
+            kp[3*i+1]=pose_pos[i][1]
+            kp[3*i+2]=pose_conf[i+0]
+    
+    lines=[[0,1],[0,2],[0, 5, 6],[1, 3],[2, 4],[5, 6],
+            [5, 11],[6,12],[11,12],[5,7],[7,9],[6,8],
+            [8,10],[11,13],[13,15],[12,14],[14,16]]
+    for l in lines:
+        kp_line(display, kp, l, thickness=thickness, clr=clr)
+
+    if len(kp)==19*3:
+        kp_line(display, kp, [17, 18], thickness=thickness, clr=clr)
 
 def draw_boxes(display,
                an,
@@ -437,14 +456,7 @@ def draw_boxes(display,
             else:
                 kp=a["facepose_points"]
 
-            lines=[[0,1],[0,2],[0, 5, 6],[1, 3],[2, 4],[5, 6],
-                   [5, 11],[6,12],[11,12],[5,7],[7,9],[6,8],
-                   [8,10],[11,13],[13,15],[12,14],[14,16]]
-            for l in lines:
-               kp_line(display, kp, l, thickness=thickness)
-
-            if len(kp)==19*3:
-                kp_line(display, kp, [17, 18], thickness=thickness)
+            draw_pose(display, kp=kp, thickness=thickness)
             
         display.draw_text(label, a["box"][0], a["box"][3])
 
