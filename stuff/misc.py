@@ -92,3 +92,8 @@ def timestr(delta):
     if h!=0:
         r=f"{h:02d}:"+r
     return r
+
+def get_dict_param(dict, name, default):
+    if dict is not None and name in dict:
+        return dict[name]
+    return default
