@@ -66,7 +66,7 @@ class Display:
         best_boxes.sort(key=lambda x: x["dist"])
         return best_boxes
 
-    def show(self, image, title=None):
+    def show(self, image, title=None, is_rgb=False):
         h, w, _ = image.shape
         scale=min(self.width/w, self.height/h)
         self.img_width=min(self.width, int(scale*w))
@@ -81,6 +81,8 @@ class Display:
                       1.0-self.pad_r/self.width,
                       1.0-self.pad_b/self.height]
 
+        if is_rgb:
+            image=cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         image_resized=cv2.resize(image, (self.img_width, self.img_height))
         image_padded=cv2.copyMakeBorder(image_resized,
                                         self.pad_t, self.pad_b, self.pad_l, self.pad_r,
