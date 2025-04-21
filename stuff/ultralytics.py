@@ -1,5 +1,6 @@
 
 import stuff.coord as coord
+import stuff.match as match
 
 def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
     # Coco/Facepose order          Facepoint order
@@ -99,6 +100,26 @@ def unpack_yolo_keypoints(det_kp_list, det_kp_conf_list, index):
         print("Bad number of yolo keypoints "+str(len(flat_kp)))
     return None, None, None, None
 
+def attr_match(d,d2,class_to_attribute_map):
+    # match attribute detections to base detections
+    # returns a score for if d2 is a base object for d
+    # i.e. if d is a "person_with_hat" detection and d2 is "person" then 
+    # the iou of d2 with d is returned
+
+    m=class_to_attribute_map[d["class"]]
+    if m is None:
+        return 0.0
+    base_class_index=m["base_class_index"]
+    attr_index=m["attr_index"]
+    if attr_index is None:
+        return 0.0
+    if d2["class"]!=base_class_index:
+        return 0.0
+    return coord.box_iou(d2["box"], d["box"])
+
+def attr_partition_fn(obj, context):
+    return obj["partition_mask"]
+
 def fold_detections_to_attributes(gts, class_names, attributes):
     """
     Remove GT boxes that correspond to class attributes and build
@@ -117,7 +138,7 @@ def fold_detections_to_attributes(gts, class_names, attributes):
 
     class_to_attribute_map=None
     if attributes is not None:
-        class_to_attribute_map=[{"base_class_index":None, "attr_index":None}]*len(class_names)
+        class_to_attribute_map=[None]*len(class_names)
         for i,a in enumerate(attributes):
             base_class=a.split(":")[0]
             if base_class in class_names:
@@ -128,26 +149,54 @@ def fold_detections_to_attributes(gts, class_names, attributes):
                     class_to_attribute_map[j]={"base_class_index":base_class_index,
                                                     "attr_index":i}
     if class_to_attribute_map is not None:
+
         # replace attribute detections with attribute properties in the
         # underlying object
-        for d in gts:
-            m=class_to_attribute_map[d["class"]]
-            base_class_index=m["base_class_index"]
-            attr_index=m["attr_index"]
-            if attr_index is not None:
-                best_iou=0
-                for i,d2 in enumerate(gts):
-                    if d2["class"]==base_class_index:
-                        iou=coord.box_iou(d2["box"], d["box"])
-                        if iou>best_iou:
-                            best_iou=iou
-                            best_match=i
-                if best_iou>0.3:
-                    d2=gts[best_match]
-                    if not "attrs" in d2:
-                        d2["attrs"]=[0]*len(attributes)
-                    d2["attrs"][attr_index]=max(d2["attrs"][attr_index], d["confidence"])
-                    d["confidence"]=0
+
+        if True:
+            # optimized assignment as this is a miserable N^2 thing by 
+            # default. If you have 200 detections this gets pretty ugly to
+            # match all with all....
+            for d in gts:
+                d["partition_mask"]=match.uniform_grid_partition(d["box"], context=[4,16])
+
+            new_ind, old_ind, scores=match.match_lsa2(gts, gts, 
+                            mfn=attr_match, mfn_context=class_to_attribute_map, 
+                            partition_fn=attr_partition_fn, max_partitions=64,
+                            match_method="greedy_multi_match")
+            
+            for i,n in enumerate(new_ind):
+                d=gts[new_ind[i]]
+                d2=gts[old_ind[i]]
+                m=class_to_attribute_map[d["class"]]
+                assert m is not None
+                base_class_index=m["base_class_index"]
+                attr_index=m["attr_index"]
+                assert d2["class"]==base_class_index
+                if not "attrs" in d2:
+                    d2["attrs"]=[0]*len(attributes)
+                d2["attrs"][attr_index]=max(d2["attrs"][attr_index], d["confidence"])
+                d["confidence"]=0
+        else:
+            for d in gts:
+                m=class_to_attribute_map[d["class"]]
+                base_class_index=m["base_class_index"]
+                attr_index=m["attr_index"]
+                if attr_index is not None:
+                    best_iou=0
+                    for i,d2 in enumerate(gts):
+                        if d2["class"]==base_class_index:
+                            iou=coord.box_iou(d2["box"], d["box"])
+                            if iou>best_iou:
+                                best_iou=iou
+                                best_match=i
+                    if best_iou>0.3:
+                        print(best_iou)
+                        d2=gts[best_match]
+                        if not "attrs" in d2:
+                            d2["attrs"]=[0]*len(attributes)
+                        d2["attrs"][attr_index]=max(d2["attrs"][attr_index], d["confidence"])
+                        d["confidence"]=0
         # delete attribute detections
         gts=[x for x in gts if x["confidence"]!=0]
     return gts
