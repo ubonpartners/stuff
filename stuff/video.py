@@ -1,6 +1,9 @@
 from collections import OrderedDict
 import cv2
-
+import stuff.misc as misc
+import tempfile
+import os
+import shutil
 
 class RandomAccessVideoReader:
     """
@@ -100,3 +103,11 @@ class RandomAccessVideoReader:
         else:
             # We might have hit EOF
             return None
+
+def mp4_to_h264(src, dest, debug=False):
+    fd, tmp_path = tempfile.mkstemp(suffix=".h264")
+    os.close(fd)  # Close the open file descriptor so ffmpeg can overwrite it
+    misc.rm(tmp_path)
+
+    misc.run_cmd(f"ffmpeg -i {src} -c:v copy -bsf:v h264_mp4toannexb -an -f h264 {tmp_path}", debug=debug)
+    shutil.move(tmp_path, dest)

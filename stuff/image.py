@@ -1,5 +1,8 @@
 import piexif
 import piexif.helper
+import numpy as np
+from skimage.metrics import structural_similarity as ssim
+import cv2
 
 def image_append_exif_comment(image_file, comment):
     """
@@ -50,3 +53,21 @@ def image_get_exif_comment(image_file):
     except KeyError:
         pass
     return user_comment
+
+def image_ssim(img1, img2):
+    # Resize if necessary
+    if img1.shape != img2.shape:
+        img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]))
+
+    # Split into color channels
+    channels1 = cv2.split(img1)
+    channels2 = cv2.split(img2)
+
+    # Compute SSIM for each channel
+    ssim_scores = [
+        ssim(c1, c2, data_range=255)
+        for c1, c2 in zip(channels1, channels2)
+    ]
+
+    # Return average SSIM
+    return np.mean(ssim_scores)

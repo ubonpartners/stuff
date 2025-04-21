@@ -1,9 +1,12 @@
 import os
+import sys
 import json
 import shutil
 from pathlib import Path
 import yaml
 import pickle
+import subprocess
+import shlex
 
 def makedir(path: str) -> None:
     """
@@ -97,3 +100,35 @@ def get_dict_param(dict, name, default):
     if dict is not None and name in dict:
         return dict[name]
     return default
+
+def run_cmd(cmd, debug=False, timeout=240, num_attempts=3):
+    if isinstance(cmd, str):
+        cmd=shlex.split(cmd)
+
+    if debug:
+        subprocess.run(cmd)
+        return
+    for attempt in range(num_attempts):
+        try:
+            result=subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            print(f"⚠️ Command {cmd} attempt {attempt} timed out after {timeout} seconds")
+            print(f"\n STDOUT: {e.stdout}")
+            print(f" STDERR: {e.stderr}")
+            print("======================\n")
+            if attempt+1==num_attempts:
+                sys.exit(1)
+            print("Retrying....")
+            continue
+        stdout_str = result.stdout
+        stderr_str = result.stderr
+        if result.returncode!=0:
+            print(f"⚠️ Command {cmd} attempt {attempt} failed returncode {result.returncode}")
+            print(f"\n STDOUT: {stdout_str}")
+            print(f" STDERR: {stderr_str}")
+            print("======================\n")
+            if attempt+1==num_attempts:
+                sys.exit(1)
+            print("Retrying....")
+            continue
+        break
