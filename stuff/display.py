@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import stuff.coord as coord
-import stuff.draw as draw
+import stuff.ARGBdraw as ARGBdraw
 
 def window_mouse_callback(event, x, y, flags, display):
     xc=(x-display.pad_l)/display.img_width
@@ -27,8 +27,7 @@ class Display:
         self.window_name=name
         self.events=[]
         self.selected_boxes_list=[]
-        self.overlay_front=np.zeros((self.height, self.width, 4), np.uint8)
-        self.overlay_back=np.zeros((self.height, self.width, 4), np.uint8)
+        self.overlay=ARGBdraw.ARGBdraw(self.width, self.height)
         if image is None:
             image=np.zeros((self.height, self.width, 3), np.uint8)
 
@@ -88,23 +87,15 @@ class Display:
                                         self.pad_t, self.pad_b, self.pad_l, self.pad_r,
                                         cv2.BORDER_CONSTANT, (0,0,0))
         
-        blended=image_padded
-        
-        for overlay in [self.overlay_back, self.overlay_front]:
-            # Split the overlay into its channels
-            alpha, r, g, b = cv2.split(overlay)
-            # Normalize the alpha channel to the range [0, 1]
-            alpha = alpha.astype(float) / 255
-            # Ensure the base is float for blending
-            base = blended.astype(float)
-            # Stack the RGB channels of the overlay for blending
-            overlay_rgb = cv2.merge((r, g, b))
-            # Blend the images using alpha
-            blended = (1 - alpha[..., np.newaxis]) * base + alpha[..., np.newaxis] * overlay_rgb
-            # Convert the result back to uint8
-            blended = blended.astype(np.uint8)
+    
+        #self.overlay.box([0.1,0.1,0.2,0,2], clr=(255,0,0,255), line_width=-1)
+        #self.overlay.box([0.2,0.1,0.3,0,2], clr=(255,0,255,0), line_width=-1)
+        #self.overlay.box([0.3,0.1,0.4,0,2], clr=(255,255,0,0), line_width=-1)
 
-        cv2.imshow(self.window_name, blended)
+        argb=self.overlay.get_numpy_view()
+        result=ARGBdraw.blend_argb_over_rgb(argb, image_padded)
+
+        cv2.imshow(self.window_name, result)
         if title is not None:
             cv2.setWindowTitle(self.window_name, title)
 
@@ -124,24 +115,23 @@ class Display:
         return ret
     
     def clear(self):
-        self.overlay_front[0:self.height, 0:self.width]=(0,0,0,0)
-        self.overlay_back[0:self.height, 0:self.width]=(0,0,0,0)
+        self.overlay.clear()
         self.selected_boxes_list=[]
 
     def draw_line(self, start, stop, clr=None, thickness=1):
         start_img=coord.unmap_roi_point(self.img_roi, start)
         stop_img=coord.unmap_roi_point(self.img_roi, stop)
-        draw.draw_line(self.overlay_front, start_img, stop_img, clr=clr, thickness=thickness)
+        self.overlay.line(start_img, stop_img, clr=clr, line_width=thickness)
 
     def draw_box(self, box, clr=None, thickness=1, select_context=None):
         box_img=coord.unmap_roi_box(self.img_roi, box)
-        draw.draw_box(self.overlay_front, box_img, clr=clr, thickness=thickness)
+        self.overlay.box(box_img, clr=clr, line_width=thickness)
         if select_context:
             self.selected_boxes_list.append({"box":box, "context":select_context})
 
     def draw_circle(self, centre, radius, clr=None, thickness=1):
         c=coord.unmap_roi_point(self.img_roi, centre)
-        draw.draw_circle(self.overlay_front, c, radius, clr=clr, thickness=thickness)
+        self.overlay.circle(c, radius, clr=clr, line_width=thickness)
 
     def draw_text(self, text, xc, yc,
               font=cv2.FONT_HERSHEY_SIMPLEX,
@@ -156,16 +146,7 @@ class Display:
         else:
             pos_img=[xc,yc]
     
-        draw.draw_text(self.overlay_front,
-                       text,
-                       pos_img[0], pos_img[1],
-                       img_bg=self.overlay_back,
-                       font=font,
-                       fontScale=fontScale,
-                       fontColor=fontColor,
-                       bgColor=bgColor,
-                       lineType=lineType,
-                       thickness=thickness)
+        self.overlay.text(text, pos_img, clr=fontColor, bg_clr=bgColor)
 
 def display_image_wait_key(image, scale=0, title="no title"):
     display=Display(image=image, name=title)

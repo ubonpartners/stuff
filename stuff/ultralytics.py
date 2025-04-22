@@ -1,6 +1,54 @@
-
+import copy
 import stuff.coord as coord
 import stuff.match as match
+
+def is_large(x):
+    return x["box"][2]-x["box"][0]>=0.1
+
+def has_face_points(x):
+    """
+    Return True if the annotation has non-trivial face points (i.e. not all 0)
+    """
+    t=0
+    if "face_points" in x:
+        for i in range(5):
+            t+=x["face_points"][3*i+2]
+    if "facepose_points" in x:
+        for i in [0,1,2,17,18]:
+            t+=x["facepose_points"][3*i+2]
+    if t<0.1:
+        return False
+    return True
+
+def has_pose_points(x):
+    """
+    Return True if the annotation has non-trivial pose points (i.e. not all 0)
+    """
+    t=0
+    if "pose_points" in x:
+        for i in range(17):
+            t+=x["pose_points"][3*i+2]
+    if "facepose_points" in  x:
+        for i in range(3,17):
+            t+=x["facepose_points"][3*i+2]
+    if t<0.1:
+        return False
+    return True
+
+def better_annotation(a1, a2):
+    """
+    return True if a1 is 'better' than a2
+    better is currently the one that has pose, face points if the other doesn't else the largest
+    """
+    a1_pp=has_pose_points(a1)
+    a2_pp=has_pose_points(a2)
+    if a1_pp!=a2_pp:
+        return a1_pp
+    a1_fp=has_face_points(a1)
+    a2_fp=has_face_points(a2)
+    if a1_fp!=a2_fp:
+        return a1_fp
+    return stuff.box_a(a1["box"])>stuff.box_a(a2["box"])
 
 def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
     # Coco/Facepose order          Facepoint order
@@ -10,10 +58,13 @@ def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
     # ..                           3-Right mouth
     # 17 -Left mouth               4-Left mouth
     # 18 -Right mouth
+    # 19 -face box TL
+    # 20 -face box BR
 
     if "facepose_points" in gt:
         assert not "face_points" in gt
         assert not "pose points" in gt
+        assert not "facebox_points" in gt
 
     face_to_facepose_map=[2, 1, 0, 18, 17]
 
@@ -22,7 +73,7 @@ def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
         assert pose_points is False
         if "facepose_points" in gt:
             return
-        gt["facepose_points"]=[0]*3*19
+        gt["facepose_points"]=[0]*3*21
         has_fp=has_face_points(gt)
         if "pose_points" in gt:
             gt["facepose_points"][0:3*17]=copy.copy(gt["pose_points"])
@@ -32,6 +83,9 @@ def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
                 dp=face_to_facepose_map[i]
                 for j in range(3):
                     gt["facepose_points"][dp*3+j]=gt["face_points"][i*3+j]
+        if "facebox_points" in gt:
+            gt["facepose_points"][(19*3):(21*3)]=gt["facebox_points"]
+            del gt["facebox_points"]
         if "face_points" in gt:
             del gt["face_points"]
         return
@@ -86,16 +140,14 @@ def unpack_yolo_keypoints(det_kp_list, det_kp_conf_list, index):
         if det_kp[j][0]<=0 and det_kp[j][1]<=0:
             flat_kp[3*j+2]=0
 
-    if len(flat_kp)==51:
+    if len(flat_kp)==51: # 17x3
         return None, flat_kp, None, None # pose points only
-    elif len(flat_kp)==66:
+    elif len(flat_kp)==66: # 22x3
         return flat_kp[0:15], flat_kp[15:66], None, None # face points, pose points
-    elif len(flat_kp)==15:
+    elif len(flat_kp)==15: # 5x3
         return flat_kp[0:15], None, None, None # face points only
-    elif len(flat_kp)==57:
-        return None, None, flat_kp[0:57], None # facepose points
-    elif len(flat_kp)>66:
-        return flat_kp[0:15], flat_kp[15:66], None, flat_kp[66:] # face, pose, attr
+    elif len(flat_kp)==63: # 21x3
+        return None, None, flat_kp[0:63], None # facepose points
     else:
         print("Bad number of yolo keypoints "+str(len(flat_kp)))
     return None, None, None, None
@@ -459,8 +511,11 @@ def draw_pose(display, kp=None, pose_pos=None, pose_conf=None, thickness=2, clr=
     for l in lines:
         kp_line(display, kp, l, thickness=thickness, clr=clr)
 
-    if len(kp)==19*3:
+    if len(kp)==21*3:
+        # facepose: draw additional mouth, and the face box
         kp_line(display, kp, [17, 18], thickness=thickness, clr=clr)
+        face_box=[kp[19*3+0], kp[19*3+1], kp[20*3+0], kp[20*3+1]]
+        display.draw_box(face_box, clr=clr, thickness=thickness)
 
 def draw_boxes(display,
                an,

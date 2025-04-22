@@ -229,7 +229,7 @@ def uniform_grid_partition(
         Bitmask with bit (r*cols + c) set iff
         the box overlaps cell at row r, col c.
     """
-    # default to 4 rows, 8 cols
+    # default to 4 rows, 16 cols
     rows, cols = context if context is not None else (4, 16)
     x0, y0, x1, y1 = box
 
