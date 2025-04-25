@@ -38,7 +38,7 @@ class ARGBdraw:
                 alpha,clr=clr.split("_")
             assert clr in colours, f"unknown colour {clr}"
             clr=colours[clr]
-            if alpha in alphas and chan==4:
+            if alpha in alphas:
                 clr=[alphas[alpha]]+clr
                 # special case "flashing" make alpha
                 # change between 0-255 based on time

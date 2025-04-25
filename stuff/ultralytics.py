@@ -50,16 +50,60 @@ def better_annotation(a1, a2):
         return a1_fp
     return stuff.box_a(a1["box"])>stuff.box_a(a2["box"])
 
+def to_the_left(gt, point_type, index_of_first):
+    if point_type in gt:
+        pt_x_1=gt[point_type][3*index_of_first+0]
+        pt_x_2=gt[point_type][3*index_of_first+3]
+        box_w=gt["box"][2]-gt["box"][1]
+        if pt_x_2>pt_x_1 and gt[point_type][3*index_of_first+2]>0 and gt[point_type][3*index_of_first+2]>0:
+            print(f"Weird pose: {point_type} {index_of_first} {pt_x_2}>{pt_x_1} {pt_x_2-pt_x_1} {box_w}")
+
+def to_the_right(gt, point_type, index_of_first):
+    if point_type in gt:
+        pt_x_1=gt[point_type][3*index_of_first+3]
+        pt_x_2=gt[point_type][3*index_of_first+0]
+        if pt_x_2>pt_x_1 and gt[point_type][3*index_of_first+2]>0 and gt[point_type][3*index_of_first+2]>0:
+            print(f"Weird pose: {point_type} {index_of_first} {pt_x_2}>{pt_x_1}")
+
+def check_pose_points(gt):
+    return
+    to_the_left(gt, "pose_points", 1)
+    to_the_left(gt, "pose_points", 3)
+    to_the_left(gt, "pose_points", 5)
+    to_the_left(gt, "pose_points", 7)
+    to_the_left(gt, "pose_points", 9)
+    to_the_left(gt, "pose_points", 11)
+    to_the_left(gt, "pose_points", 13)
+    to_the_left(gt, "pose_points", 15)
+    to_the_right(gt, "face_points", 0)
+    to_the_right(gt, "face_points", 3)
+
+
 def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
     # Coco/Facepose order          Facepoint order
     # 0 - Nose                     0-Right eye
     # 1 - Left eye                 1-Left eye
     # 2 - Right eye                2-Nose
-    # ..                           3-Right mouth
-    # 17 -Left mouth               4-Left mouth
+    # 3 - Left Ear                 3-Right mouth
+    # 4 - Right Ear                4-Left mouth
+    # 5 - Left Shoulder
+    # 6 - Right Shoulder
+    # 7 - Left Elbow
+    # 8 - Right Elbow
+    # 9 - Left Wrist
+    # 10 -Right Wrist
+    # 11 -Left Hip
+    # 12 -Right Hip
+    # 13 -Left Knee
+    # 14 -Right Knee
+    # 15 -Left Ankle
+    # 16 -Right Ankle
+    # 17 -Left mouth               
     # 18 -Right mouth
     # 19 -face box TL
-    # 20 -face box BR
+    # 20 -face box TR
+    # 21 -face box BL
+    # 22 -face box BR
 
     if "facepose_points" in gt:
         assert not "face_points" in gt
@@ -73,7 +117,7 @@ def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
         assert pose_points is False
         if "facepose_points" in gt:
             return
-        gt["facepose_points"]=[0]*3*21
+        gt["facepose_points"]=[0]*3*23
         has_fp=has_face_points(gt)
         if "pose_points" in gt:
             gt["facepose_points"][0:3*17]=copy.copy(gt["pose_points"])
@@ -84,7 +128,7 @@ def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
                 for j in range(3):
                     gt["facepose_points"][dp*3+j]=gt["face_points"][i*3+j]
         if "facebox_points" in gt:
-            gt["facepose_points"][(19*3):(21*3)]=gt["facebox_points"]
+            gt["facepose_points"][(19*3):(23*3)]=gt["facebox_points"]
             del gt["facebox_points"]
         if "face_points" in gt:
             del gt["face_points"]
@@ -98,6 +142,7 @@ def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
             sp=face_to_facepose_map[i]
             for j in range(3):
                 gt["face_points"][i*3+j]=gt["facepose_points"][sp*3+j]
+        gt["facebox_points"]=copy.copy(gt["facepose_points"][(19*3):(23*3)])
         del gt["facepose_points"]
 
     if face_points:
@@ -139,15 +184,14 @@ def unpack_yolo_keypoints(det_kp_list, det_kp_conf_list, index):
         flat_kp[3*j+2]=det_kp_conf[j]
         if det_kp[j][0]<=0 and det_kp[j][1]<=0:
             flat_kp[3*j+2]=0
-
     if len(flat_kp)==51: # 17x3
         return None, flat_kp, None, None # pose points only
     elif len(flat_kp)==66: # 22x3
         return flat_kp[0:15], flat_kp[15:66], None, None # face points, pose points
     elif len(flat_kp)==15: # 5x3
         return flat_kp[0:15], None, None, None # face points only
-    elif len(flat_kp)==63: # 21x3
-        return None, None, flat_kp[0:63], None # facepose points
+    elif len(flat_kp)==69: # 23x3
+        return None, None, flat_kp[0:69], None # facepose points
     else:
         print("Bad number of yolo keypoints "+str(len(flat_kp)))
     return None, None, None, None
@@ -333,33 +377,26 @@ def yolo_results_to_dets(results,
                             extra_det.append(dcopy)
             out_det+=extra_det
 
-    if add_faces and not "face" in yolo_class_names and "person" in class_names and "face" in class_names:
-        person_class=class_names.index("person")
-        face_class=class_names.index("face")
-        faces=[]
-        for i,d in enumerate(out_det):
-            if d["class"]==person_class and "facepose_points" in d:
-                face_box,_=facepose_facebox(d)
-                if face_box is not None:
-                    det={"box":face_box,
-                        "class":face_class,
-                        "confidence":d["confidence"],
-                        "facepose_points":copy.copy(d["facepose_points"])}
-                    max_iou=0
-                    for f in faces:
-                        max_iou=max(max_iou, coord.box_iou(face_box, f["box"]))
-                    if max_iou<0.5:
-                        faces.append(det)
-
-        out_det+=faces
     person_class=-1
     face_class=-1
     if "person" in class_names:
         person_class=class_names.index("person")
     if "face" in class_names:
         face_class=class_names.index("face")
+    faces=[]
     for d in out_det:
         map_one_gt_keypoints(d, face_kp, pose_kp, facepose_kp)
+
+        if add_faces and not "face" in yolo_class_names and "person" in class_names and "face" in class_names:
+            if d["class"]==person_class and "facebox_points" in d:
+                conf=0.25*(d["facebox_points"][2]+d["facebox_points"][5]+d["facebox_points"][8]+d["facebox_points"][11])
+                det={"box":[d["facebox_points"][0],d["facebox_points"][1],
+                            d["facebox_points"][9],d["facebox_points"][10]],
+                     "class":face_class,
+                     "confidence":conf,
+                     "face_points":copy.copy(d["face_points"])}
+                faces.append(det)
+
         if face_kp and d["class"]==face_class:
             if "facepose_points" in d:
                 del d["facepose_points"]
@@ -370,6 +407,8 @@ def yolo_results_to_dets(results,
                 del d["facepose_points"]
             if "face_points" in d:
                 del d["face_points"]
+
+    out_det+=faces
 
     if fold_attributes:
         out_det=fold_detections_to_attributes(out_det, class_names, attributes)
@@ -511,10 +550,10 @@ def draw_pose(display, kp=None, pose_pos=None, pose_conf=None, thickness=2, clr=
     for l in lines:
         kp_line(display, kp, l, thickness=thickness, clr=clr)
 
-    if len(kp)==21*3:
+    if len(kp)==23*3:
         # facepose: draw additional mouth, and the face box
         kp_line(display, kp, [17, 18], thickness=thickness, clr=clr)
-        face_box=[kp[19*3+0], kp[19*3+1], kp[20*3+0], kp[20*3+1]]
+        face_box=[kp[19*3+0], kp[19*3+1], kp[22*3+0], kp[22*3+1]]
         display.draw_box(face_box, clr=clr, thickness=thickness)
 
 def draw_boxes(display,
