@@ -7,6 +7,8 @@ import yaml
 import pickle
 import subprocess
 import shlex
+import logging
+import time
 
 def makedir(path: str) -> None:
     """
@@ -132,3 +134,40 @@ def run_cmd(cmd, debug=False, timeout=240, num_attempts=3):
             print("Retrying....")
             continue
         break
+
+def configure_root_logger(config_str):
+    """Configure the root logger based on a string like 'info' or 'debug:file'.
+    Args:
+        config_str (str): The logging configuration string.
+            It can be a single level (e.g., 'info') or a combination of level and output (e.g., 'debug:file').
+            The output can be 'console' or 'file'.
+    """
+    parts = config_str.lower().split(':')
+    level_str = parts[0]
+    output = parts[1] if len(parts) > 1 else 'console'
+
+    # Map string to logging level
+    levels = {
+        'debug': logging.DEBUG,
+        'info': logging.INFO,
+        'warning': logging.WARNING,
+        'error': logging.ERROR,
+        'critical': logging.CRITICAL,
+    }
+    level = levels.get(level_str, logging.INFO)
+
+    # Create the handler
+    handlers=[]
+    if output == 'file' or output == 'both':
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        filename = f"log_{timestamp}.log"
+        handlers.append(logging.FileHandler(filename))
+    if output == 'console' or output == 'both':
+        handlers.append(logging.StreamHandler(sys.stdout))
+
+    # Configure the root logger
+    logging.basicConfig(
+        level=level,
+        handlers=handlers,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
