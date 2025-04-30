@@ -2,6 +2,23 @@ import copy
 import stuff.coord as coord
 import stuff.match as match
 
+def basic_nms(dets, iou_thresh=0.5):
+    # Sort detections by confidence descending
+    dets = sorted(dets, key=lambda d: d['confidence'], reverse=True)
+    kept = []
+
+    while dets:
+        best = dets.pop(0)
+        kept.append(best)
+        remaining = []
+        for d in dets:
+            # Only suppress boxes of the same class
+            if best['class'] != d['class'] or coord.box_iou(best['box'], d['box']) <= iou_thresh:
+                remaining.append(d)
+        dets = remaining
+
+    return kept
+
 def is_large(x):
     return x["box"][2]-x["box"][0]>=0.1
 
@@ -48,7 +65,7 @@ def better_annotation(a1, a2):
     a2_fp=has_face_points(a2)
     if a1_fp!=a2_fp:
         return a1_fp
-    return stuff.box_a(a1["box"])>stuff.box_a(a2["box"])
+    return coord.box_a(a1["box"])>coord.box_a(a2["box"])
 
 def to_the_left(gt, point_type, index_of_first):
     if point_type in gt:
@@ -98,7 +115,7 @@ def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
     # 14 -Right Knee
     # 15 -Left Ankle
     # 16 -Right Ankle
-    # 17 -Left mouth               
+    # 17 -Left mouth
     # 18 -Right mouth
     # 19 -face box TL
     # 20 -face box TR
@@ -199,7 +216,7 @@ def unpack_yolo_keypoints(det_kp_list, det_kp_conf_list, index):
 def attr_match(d,d2,class_to_attribute_map):
     # match attribute detections to base detections
     # returns a score for if d2 is a base object for d
-    # i.e. if d is a "person_with_hat" detection and d2 is "person" then 
+    # i.e. if d is a "person_with_hat" detection and d2 is "person" then
     # the iou of d2 with d is returned
 
     m=class_to_attribute_map[d["class"]]
@@ -220,7 +237,7 @@ def fold_detections_to_attributes(gts, class_names, attributes):
     """
     Remove GT boxes that correspond to class attributes and build
     and 'attr' vector attched to the primary GT instead
-    e.g. separate person_male GT will become the person:male 
+    e.g. separate person_male GT will become the person:male
     attribute of the person GT with the same box as the original
     person_make
     """
@@ -250,17 +267,17 @@ def fold_detections_to_attributes(gts, class_names, attributes):
         # underlying object
 
         if True:
-            # optimized assignment as this is a miserable N^2 thing by 
+            # optimized assignment as this is a miserable N^2 thing by
             # default. If you have 200 detections this gets pretty ugly to
             # match all with all....
             for d in gts:
                 d["partition_mask"]=match.uniform_grid_partition(d["box"], context=[4,16])
 
-            new_ind, old_ind, scores=match.match_lsa2(gts, gts, 
-                            mfn=attr_match, mfn_context=class_to_attribute_map, 
+            new_ind, old_ind, scores=match.match_lsa2(gts, gts,
+                            mfn=attr_match, mfn_context=class_to_attribute_map,
                             partition_fn=attr_partition_fn, max_partitions=64,
                             match_method="greedy_multi_match")
-            
+
             for i,n in enumerate(new_ind):
                 d=gts[new_ind[i]]
                 d2=gts[old_ind[i]]
@@ -408,7 +425,9 @@ def yolo_results_to_dets(results,
             if "face_points" in d:
                 del d["face_points"]
 
-    out_det+=faces
+    faces_reduced=basic_nms(faces, iou_thresh=0.45)
+    #print(f"NMS {len(faces)} {len(faces_reduced)}")
+    out_det+=faces_reduced
 
     if fold_attributes:
         out_det=fold_detections_to_attributes(out_det, class_names, attributes)
@@ -483,7 +502,7 @@ def yolo_results_to_dets(results,
                         #    img=draw_boxes(img, an)
                         #    display_image_wait_key(img)
                         d2["confidence"]=0
-                    
+
         out_det2=[]
         for d in out_det:
             if d["confidence"]!=0:
@@ -543,7 +562,7 @@ def draw_pose(display, kp=None, pose_pos=None, pose_conf=None, thickness=2, clr=
             kp[3*i+0]=pose_pos[i][0]
             kp[3*i+1]=pose_pos[i][1]
             kp[3*i+2]=pose_conf[i+0]
-    
+
     lines=[[0,1],[0,2],[0, 5, 6],[1, 3],[2, 4],[5, 6],
             [5, 11],[6,12],[11,12],[5,7],[7,9],[6,8],
             [8,10],[11,13],[13,15],[12,14],[14,16]]
@@ -560,11 +579,11 @@ def draw_boxes(display,
                an,
                class_names=None,
                highlight_index=None,
-               alt_clr=False, 
+               alt_clr=False,
                attributes=None,
                extra_text=None
                ):
-    
+
     for index,a in enumerate(an):
         highlight=index==highlight_index
         if alt_clr:
@@ -592,7 +611,7 @@ def draw_boxes(display,
                     if i==0 or i==3: # RIGHT points
                         clr="half_yellow"
                     display.draw_circle([fp[3*i+0], fp[3*i+1]], radius=0.002, clr=clr)
-                
+
         if "pose_points" in a or "facepose_points" in a:
             if "pose_points" in a:
                 kp=a["pose_points"]
@@ -600,7 +619,7 @@ def draw_boxes(display,
                 kp=a["facepose_points"]
 
             draw_pose(display, kp=kp, thickness=thickness)
-            
+
         display.draw_text(label, a["box"][0], a["box"][3])
 
     if highlight_index is not None and extra_text is None:

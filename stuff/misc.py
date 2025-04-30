@@ -9,6 +9,8 @@ import subprocess
 import shlex
 import logging
 import time
+from datetime import datetime
+
 
 def makedir(path: str) -> None:
     """
@@ -56,10 +58,10 @@ def load_dictionary(file_name: str):
     Load a dictionary from a JSON or YAML file.
 
     This function automatically determines the file format based on the file extension.
-    
+
     Args:
         file_name (str): The path to the file (JSON, YML, or YAML) to load.
-    
+
     Returns:
         dict: The loaded dictionary if successful, otherwise None.
     """
@@ -76,11 +78,13 @@ def load_dictionary(file_name: str):
     else:
         print(f"Unsupported file extension for file: {file_name}")
         return None
-    
+
 def save_atomic_pickle(data, filename):
     """
     Pickles 'data' to filename atomically
     """
+    dname = os.path.dirname(filename)
+    os.makedirs(dname, exist_ok=True)
     temp_filename=filename+".tmp"
     if os.path.isfile(temp_filename):
         rm(temp_filename)
@@ -171,3 +175,8 @@ def configure_root_logger(config_str):
         handlers=handlers,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+
+def format_seconds_ago(s):
+    if s is None or s<=0:
+        return " "
+    return "Now" if s < 60 else f"{int(s/60)}m" if s<3600 else f"{int(s/3600)}h" if s < 86400 else f"{int(s/86400)}d"

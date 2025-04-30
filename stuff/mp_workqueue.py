@@ -50,6 +50,8 @@ def mpwq_worker_fn(work_queue, result_queue, quit_queue, worker_id, worker_fn,mi
     # This is needed to capture print statements from the worker
     # and send them to the main process
     # so they can be printed to the console
+
+    logging.debug(f"Worker {worker_id} started")
     sys.stdout = StdoutProxy(result_queue, worker_id)
 
     mpwq_context={"result_queue": result_queue,
@@ -73,12 +75,16 @@ def mpwq_worker_fn(work_queue, result_queue, quit_queue, worker_id, worker_fn,mi
             result_queue.put(("exception", worker_id, error_info))
             # Break the loop if queue is empty and timeout occurs
             break
+
+    result_queue.put(("progress", worker_id, ("Done!", 1, None)))
     _ = quit_queue.get(timeout=600)
 
 def mp_workqueue_run(work_to_run, worker_fn,
                      num_workers=1,
                      desc="mp_work",
-                     min_update_interval=0.2):
+                     min_update_interval=0.2,
+                     result_callback_context=None,
+                     result_callback=None):
     """
     Launches multiple worker processes to execute work items concurrently.
     - Sets up communication queues
@@ -89,6 +95,8 @@ def mp_workqueue_run(work_to_run, worker_fn,
     log=logging.getLogger('mp_workqueue')
 
     mp.set_start_method('spawn', force=True)
+
+
     log.debug(f"Running {len(work_to_run)} tests... with {num_workers} workers")
     output_results=[]
     with tqdm(total=len(work_to_run),
@@ -106,6 +114,9 @@ def mp_workqueue_run(work_to_run, worker_fn,
         for _ in range(num_workers):
             work_queue.put(None)
 
+        prev_stdout=sys.stdout
+        #sys.stdout = StdoutProxy(result_queue, -1)
+    # Create a list of worker processes
         workers = []
         pbars=[]
         for i in range(num_workers):
@@ -122,6 +133,7 @@ def mp_workqueue_run(work_to_run, worker_fn,
             workers.append(p)
 
         num_results_got=0
+        last_pbar_refresh_time=time.time()
         while num_results_got<len(work_to_run):
             # handle messages from worker processes
             # this is a blocking call, so it will wait for a message
@@ -134,6 +146,8 @@ def mp_workqueue_run(work_to_run, worker_fn,
 
             if msg[0]=="result":
                 output_results.append(msg[2])
+                if result_callback is not None:
+                    result_callback(result_callback_context, msg[2])
                 num_results_got+=1
                 pbar.update(1)
                 continue
@@ -154,6 +168,11 @@ def mp_workqueue_run(work_to_run, worker_fn,
                     pbars[worker_id].refresh()
                 if update is not None:
                     pbars[worker_id].update(update)
+                t=time.time()
+                if t-last_pbar_refresh_time>1:
+                    for p in pbars:
+                        p.refresh()
+                    last_pbar_refresh_time=t
                 continue
 
             assert False, f"Unknown message type {msg[0]} from worker {msg[1]}"
@@ -162,10 +181,14 @@ def mp_workqueue_run(work_to_run, worker_fn,
         for _ in range(num_workers):
             quit_queue.put(None)
 
+        for p in pbars:
+            p.refresh()
+
         for p in workers:
             p.join()
         pbar.close()
 
+        sys.stdout = prev_stdout
         log.debug("Done")
     return output_results
 
