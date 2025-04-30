@@ -14,9 +14,9 @@ def window_mouse_callback(event, x, y, flags, display):
         lbutton=event==cv2.EVENT_LBUTTONDOWN
         event={"x":xc,
                "y":yc,
-               "key":None, 
-               "lbutton":lbutton, 
-               "rbutton":False, 
+               "key":None,
+               "lbutton":lbutton,
+               "rbutton":False,
                "selected":boxes}
         display.events.append(event)
 
@@ -86,8 +86,8 @@ class Display:
         image_padded=cv2.copyMakeBorder(image_resized,
                                         self.pad_t, self.pad_b, self.pad_l, self.pad_r,
                                         cv2.BORDER_CONSTANT, (0,0,0))
-        
-    
+
+
         #self.overlay.box([0.1,0.1,0.2,0,2], clr=(255,0,0,255), line_width=-1)
         #self.overlay.box([0.2,0.1,0.3,0,2], clr=(255,0,255,0), line_width=-1)
         #self.overlay.box([0.3,0.1,0.4,0,2], clr=(255,255,0,0), line_width=-1)
@@ -100,7 +100,7 @@ class Display:
             cv2.setWindowTitle(self.window_name, title)
 
         if self.writer is not None:
-            self.writer.write(blended)
+            self.writer.write(result)
 
     def get_events(self, delay_ms):
         r=cv2.waitKey(delay_ms)  # Press any key to move to the next image
@@ -113,7 +113,7 @@ class Display:
         ret=self.events
         self.events=[]
         return ret
-    
+
     def clear(self):
         self.overlay.clear()
         self.selected_boxes_list=[]
@@ -145,7 +145,7 @@ class Display:
             pos_img=coord.unmap_roi_point(self.img_roi, [xc,yc])
         else:
             pos_img=[xc,yc]
-    
+
         self.overlay.text(text, pos_img, clr=fontColor, bg_clr=bgColor)
 
 def display_image_wait_key(image, scale=0, title="no title"):
