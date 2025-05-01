@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import stuff.coord as coord
 import stuff.ARGBdraw as ARGBdraw
+import stuff.ultralytics as sultralytics
 
 def window_mouse_callback(event, x, y, flags, display):
     xc=(x-display.pad_l)/display.img_width
@@ -157,3 +158,31 @@ def display_image_wait_key(image, scale=0, title="no title"):
             key=e
     del display
     return key
+
+def faf_display(list_of_stuff, title="no title"):
+    img=None
+    objs=[]
+    for i, s in enumerate(list_of_stuff):
+        if isinstance(s,np.ndarray):
+            img=s
+        if isinstance(s, dict):
+            objs.append(s)
+        if isinstance(s, list):
+            for s2 in s:
+                if isinstance(s2, dict):
+                    objs.append(s2)
+
+    display=Display(width=1280, height=720)
+    display.clear
+    display.show(img, title=title)
+    sultralytics.draw_boxes(display, objs)
+    display.show(img, title=title)
+    while True:
+        events=display.get_events(10)
+        key=None
+        for e in events:
+            if e["key"]!=None:
+                key=e
+        if key is not None:
+            break
+    del display

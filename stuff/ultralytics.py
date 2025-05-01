@@ -96,6 +96,18 @@ def check_pose_points(gt):
     to_the_right(gt, "face_points", 3)
 
 
+def get_face_triangle_points(gt):
+    # returns nose, left eye, right eye - can be from face points or pose points
+    if "pose_points" in gt:
+        return gt["pose_points"][0:3*3]
+    if "face_points" in gt:
+        ret=[0]*3*3
+        ret[0:3]=gt["face_points"][6:9]
+        ret[3:6]=gt["face_points"][3:6]
+        ret[6:9]=gt["face_points"][0:3]
+        return ret
+    return None
+
 def map_one_gt_keypoints(gt, face_points, pose_points, facepose_points):
     # Coco/Facepose order          Facepoint order
     # 0 - Nose                     0-Right eye
