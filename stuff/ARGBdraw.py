@@ -26,12 +26,12 @@ class ARGBdraw:
              "yellow":[0,255,255],
              "white":[255,255,255],
              "black":[0,0,0]}
-    
+
         alphas={"solid":255,
             "half":128,
             "flashing":128,
             "transparent":64}
-        
+
         if isinstance(clr, str):
             alpha=None
             if "_" in clr:
@@ -94,31 +94,39 @@ class ARGBdraw:
             self.ctx.set_line_width(line_width)
             self.ctx.stroke()
 
-    def text(self, text, pos, clr=(255,255,255,255), bg_clr=None, font_size=16, font_face="Sans"):
-        x=self.width*pos[0]
-        y=self.height*pos[1]
-        
+    def text(self, text, pos, clr=(255, 255, 255, 255), bg_clr=None, font_size=16, font_face="Sans"):
+        x = self.width * pos[0]
+        y = self.height * pos[1]
+
         self.ctx.select_font_face(font_face, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
         self.ctx.set_font_size(font_size)
 
-        # Measure the text
-        ext = self.ctx.text_extents(text)
+        lines = text.split('\n')
+        line_extents = [self.ctx.text_extents(line) for line in lines]
 
-        # Compute box corners
-        bg_clr=(128,0,255,0)
+        # Compute bounding box for all lines if background color is set
         if bg_clr is not None:
-            padding=2
-            box_x = x + ext.x_bearing - padding
-            box_y = y + ext.y_bearing - padding
-            box_w = ext.width + 2 * padding
-            box_h = ext.height + 2 * padding
+            padding = 2
+            line_spacing = font_size * 1.2  # approximate line height
+            max_width = max(ext.width for ext in line_extents)
+            total_height = line_spacing * len(lines)
+
+            # Use the first line extents for bearing reference
+            first_ext = line_extents[0]
+            box_x = x + first_ext.x_bearing - padding
+            box_y = y + first_ext.y_bearing - padding
+            box_w = max_width + 2 * padding
+            box_h = total_height + 2 * padding
+
             self._set_color(bg_clr)
             self.ctx.rectangle(box_x, box_y, box_w, box_h)
             self.ctx.fill()
 
         self._set_color(clr)
-        self.ctx.move_to(x, y)
-        self.ctx.show_text(text)
+        line_spacing = font_size * 1.2
+        for i, line in enumerate(lines):
+            self.ctx.move_to(x, y + i * line_spacing)
+            self.ctx.show_text(line)
 
     def get_scaled_numpy_view(self, width, height):
         """
@@ -150,15 +158,15 @@ class ARGBdraw:
         bgra = np.ndarray((self.height, self.width, 4), dtype=np.uint8, buffer=buf)
         argb = bgra[..., [3, 2, 1, 0]]
         return argb
-    
+
 def blend_argb_over_rgb(argb, rgb):
     """
     Blend a premultiplied ARGB image over an RGB background.
-    
+
     Parameters:
     - argb: (H, W, 4) ARGB premultiplied uint8 array
     - rgb: (H, W, 3) uint8 background
-    
+
     Returns:
     - result: (H, W, 3) uint8 composited RGB image
     """
