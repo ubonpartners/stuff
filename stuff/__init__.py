@@ -9,5 +9,6 @@ from .misc import configure_root_logger,format_seconds_ago
 from .ultralytics import yolo_results_to_dets, draw_boxes, fold_detections_to_attributes,find_gt_from_point,draw_pose
 from .ultralytics import map_one_gt_keypoints, map_keypoints, better_annotation, has_pose_points, has_face_points, is_large
 from .ultralytics import check_pose_points, get_face_triangle_points
+from .ultralytics_ap import ap_calc
 from .image import image_append_exif_comment, image_get_exif_comment, image_ssim
 from .mp_workqueue import mp_workqueue_run, test_work
