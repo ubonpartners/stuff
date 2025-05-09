@@ -11,7 +11,7 @@ class RandomAccessVideoReader:
     Works with a small LRU cache for video frames.
     Will reopen and re-read the entire
     video from the start if you request an older frame that isn't in the cache.
-    
+
     The typical flow is forward-only, but if you jump back to an older frame
     that's no longer in the cache, we:
       - close the video
@@ -24,7 +24,7 @@ class RandomAccessVideoReader:
         self.video_path = video_path
         self.cap = cv2.VideoCapture(video_path)
         self.max_size = max_size
-        
+
         self.cache = OrderedDict()  # frame_index -> frame
         self.next_frame_index = 0   # the next frame we haven't read yet
 
@@ -56,13 +56,13 @@ class RandomAccessVideoReader:
         """
         Return the frame at time offset 'frame_time' seconds.
         """
-        index=int(frame_time*self.fps)
+        index=int(frame_time*self.fps+0.001)
         return self.get_frame_at_index(index)
 
     def get_frame_at_index(self, frame_index):
         """
         Return the frame at 'frame_index'.
-        
+
         Cases:
         1) If 'frame_index' is in the cache, just pop+reinsert to refresh LRU usage.
         2) If 'frame_index' < self.next_frame_index but not in the cache:
@@ -70,7 +70,7 @@ class RandomAccessVideoReader:
             - Read forward up to 'frame_index'.
         3) If 'frame_index' >= self.next_frame_index:
             - Read forward from self.next_frame_index up to 'frame_index'.
-        
+
         Return None if the requested frame cannot be read (EOF).
         """
 
