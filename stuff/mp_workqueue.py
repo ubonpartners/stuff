@@ -92,6 +92,10 @@ def mp_workqueue_run(work_to_run, worker_fn,
     - Displays progress bars per worker
     - Handles output and exceptions
     """
+
+    if len(work_to_run)==0:
+        return []
+
     log=logging.getLogger('mp_workqueue')
 
     mp.set_start_method('spawn', force=True)

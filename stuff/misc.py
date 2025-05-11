@@ -180,3 +180,6 @@ def format_seconds_ago(s):
     if s is None or s<=0:
         return " "
     return "Now" if s < 60 else f"{int(s/60)}m" if s<3600 else f"{int(s/3600)}h" if s < 86400 else f"{int(s/86400)}d"
+
+def name_from_file(x):
+    return os.path.splitext(os.path.basename(x))[0]
