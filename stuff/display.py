@@ -88,11 +88,6 @@ class Display:
                                         self.pad_t, self.pad_b, self.pad_l, self.pad_r,
                                         cv2.BORDER_CONSTANT, (0,0,0))
 
-
-        #self.overlay.box([0.1,0.1,0.2,0,2], clr=(255,0,0,255), line_width=-1)
-        #self.overlay.box([0.2,0.1,0.3,0,2], clr=(255,0,255,0), line_width=-1)
-        #self.overlay.box([0.3,0.1,0.4,0,2], clr=(255,255,0,0), line_width=-1)
-
         argb=self.overlay.get_numpy_view()
         result=ARGBdraw.blend_argb_over_rgb(argb, image_padded)
 

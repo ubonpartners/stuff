@@ -94,7 +94,7 @@ class ARGBdraw:
             self.ctx.set_line_width(line_width)
             self.ctx.stroke()
 
-    def text(self, text, pos, clr=(255, 255, 255, 255), bg_clr=None, font_size=16, font_face="Sans"):
+    def text(self, text, pos, clr=(255, 255, 255, 255), bg_clr=None, font_size=16, font_face="monospace"):
         x = self.width * pos[0]
         y = self.height * pos[1]
 
