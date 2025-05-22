@@ -3,6 +3,7 @@ import numpy as np
 import stuff.coord as coord
 import stuff.ARGBdraw as ARGBdraw
 import stuff.ultralytics as sultralytics
+from PIL import Image
 
 def window_mouse_callback(event, x, y, flags, display):
     xc=(x-display.pad_l)/display.img_width
@@ -160,6 +161,10 @@ def faf_display(list_of_stuff, title="no title"):
     for i, s in enumerate(list_of_stuff):
         if isinstance(s,np.ndarray):
             img=s
+        if isinstance(s, Image.Image):
+            # Convert from PIL (RGB) to OpenCV (BGR)
+            image_np = np.array(s)
+            img = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         if isinstance(s, dict):
             objs.append(s)
         if isinstance(s, list):
