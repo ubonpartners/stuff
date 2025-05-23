@@ -38,7 +38,8 @@ def mpwq_progress(mpwq_context, desc=None, total=None, update=None):
     mpwq_context["result_queue"].put(("progress", mpwq_context["worker_id"], (desc, total, mpwq_context["accum_update"])))
     mpwq_context["accum_update"]=0
 
-def mpwq_worker_fn(work_queue, result_queue, quit_queue, worker_id, worker_fn,min_update_interval=0.1):
+def mpwq_worker_fn(work_queue, result_queue, quit_queue, worker_id, worker_fn,min_update_interval=0.1,
+                   process_setup_fn=None, process_setup_args=None):
     """
     Core worker function that:
     - Redirects stdout to a queue
@@ -58,7 +59,12 @@ def mpwq_worker_fn(work_queue, result_queue, quit_queue, worker_id, worker_fn,mi
                   "worker_id": worker_id,
                   "last_update":time.time(),
                   "accum_update":0,
-                  "min_update_interval": min_update_interval}
+                  "min_update_interval": min_update_interval,
+                  "process_setup_results": None}
+
+    if process_setup_fn is not None:
+        mpwq_context["process_setup_results"]=process_setup_fn(process_setup_args)
+
     while True:
         try:
             # Get a job from the work queue
@@ -84,7 +90,10 @@ def mp_workqueue_run(work_to_run, worker_fn,
                      desc="mp_work",
                      min_update_interval=0.2,
                      result_callback_context=None,
-                     result_callback=None):
+                     result_callback=None,
+                     process_setup_fn=None,
+                     process_setup_args=None,
+                     show_pbars=True):
     """
     Launches multiple worker processes to execute work items concurrently.
     - Sets up communication queues
@@ -108,7 +117,8 @@ def mp_workqueue_run(work_to_run, worker_fn,
               colour="#0000ff",
               position=0,
               leave=True,
-              dynamic_ncols=True) as pbar:
+              dynamic_ncols=True,
+              smoothing=0.1) as pbar:
 
         work_queue = Queue()
         result_queue = Queue()
@@ -125,14 +135,16 @@ def mp_workqueue_run(work_to_run, worker_fn,
         pbars=[]
         for i in range(num_workers):
             c=30+(200*i)//num_workers
-            pbars.append(tqdm(total=100,
-              desc=f"{i:02d}: {'Starting....':31s}",
-              colour=f"#e0{c:02x}00",
-              position=i+1,
-              leave=True, dynamic_ncols=True))
+            if show_pbars:
+                pbars.append(tqdm(total=100,
+                    desc=f"{i:02d}: {'Starting....':31s}",
+                    colour=f"#e0{c:02x}00",
+                    position=i+1,
+                    leave=True, dynamic_ncols=True))
 
             p = Process(target=mpwq_worker_fn,
-                        args=(work_queue, result_queue, quit_queue, i, worker_fn, min_update_interval))
+                        args=(work_queue, result_queue, quit_queue, i, worker_fn,
+                              min_update_interval, process_setup_fn, process_setup_args))
             p.start()
             workers.append(p)
 
@@ -165,18 +177,19 @@ def mp_workqueue_run(work_to_run, worker_fn,
                 # we need to do this in the main process as its impossible
                 # to get it working properly for all the processes to try
                 # to write to stdout
-                worker_id, (desc, total, update) = msg[1], msg[2]
-                if desc is not None:
-                    pbars[worker_id].reset(total=total)
-                    pbars[worker_id].set_description(desc)
-                    pbars[worker_id].refresh()
-                if update is not None:
-                    pbars[worker_id].update(update)
-                t=time.time()
-                if t-last_pbar_refresh_time>1:
-                    for p in pbars:
-                        p.refresh()
-                    last_pbar_refresh_time=t
+                if show_pbars:
+                    worker_id, (desc, total, update) = msg[1], msg[2]
+                    if desc is not None:
+                        pbars[worker_id].reset(total=total)
+                        pbars[worker_id].set_description(desc)
+                        pbars[worker_id].refresh()
+                    if update is not None:
+                        pbars[worker_id].update(update)
+                    t=time.time()
+                    if t-last_pbar_refresh_time>1:
+                        for p in pbars:
+                            p.refresh()
+                        last_pbar_refresh_time=t
                 continue
 
             assert False, f"Unknown message type {msg[0]} from worker {msg[1]}"

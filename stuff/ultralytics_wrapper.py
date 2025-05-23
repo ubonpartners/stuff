@@ -192,12 +192,17 @@ class ultralytics_wrapper:
             return ultralytics.RTDETR(name)
         if "pose" in name or "face" in name or "full" in name or "attributes" in name or "dpa" in name:
             task="pose"
-        model=ultralytics.YOLO(name, task=task, verbose=False)
-        #model.fuse()
+        if "dpar" in name:
+            task="posereid"
 
-        info=self.yolo[0].info(verbose=False)
-        self.yolo_num_params=info[1]
-        self.yolo_num_flops=info[3]
+        model=ultralytics.YOLO(name, task=task, verbose=False)
+        info=model.info(verbose=False)
+
+        self.yolo_num_params=0
+        self.yolo_num_flops=0
+        if info is not None:
+            self.yolo_num_params=info[1]
+            self.yolo_num_flops=info[3]
 
         #try:
         #    self.yolo_num_params = sum(p.numel() for p in self.yolo[0].model.parameters())
