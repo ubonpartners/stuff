@@ -107,16 +107,18 @@ def get_dict_param(dict, name, default):
         return dict[name]
     return default
 
-def run_cmd(cmd, debug=False, timeout=240, num_attempts=3):
+def run_cmd(cmd, debug=False, env=None, timeout=240, num_attempts=3):
     if isinstance(cmd, str):
         cmd=shlex.split(cmd)
+    if env is None:
+        env = os.environ.copy()
 
     if debug:
-        subprocess.run(cmd)
-        return
+        result=subprocess.run(cmd, env=env)
+        return result.returncode
     for attempt in range(num_attempts):
         try:
-            result=subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            result=subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired as e:
             print(f"⚠️ Command {cmd} attempt {attempt} timed out after {timeout} seconds")
             print(f"\n STDOUT: {e.stdout}")
@@ -138,17 +140,21 @@ def run_cmd(cmd, debug=False, timeout=240, num_attempts=3):
             print("Retrying....")
             continue
         break
+    return 0 # assuming success
 
-def configure_root_logger(config_str):
+def configure_root_logger(config_str, log_dir=None):
     """Configure the root logger based on a string like 'info' or 'debug:file'.
     Args:
         config_str (str): The logging configuration string.
             It can be a single level (e.g., 'info') or a combination of level and output (e.g., 'debug:file').
             The output can be 'console' or 'file'.
+        log_dir (str): Logging output directory for file based logger
     """
     parts = config_str.lower().split(':')
     level_str = parts[0]
     output = parts[1] if len(parts) > 1 else 'console'
+    if log_dir is None:
+        log_dir = os.getcwd()
 
     # Map string to logging level
     levels = {
@@ -164,7 +170,7 @@ def configure_root_logger(config_str):
     handlers=[]
     if output == 'file' or output == 'both':
         timestamp = time.strftime('%Y%m%d_%H%M%S')
-        filename = f"log_{timestamp}.log"
+        filename = f"{log_dir}/log_{timestamp}.log"
         handlers.append(logging.FileHandler(filename))
     if output == 'console' or output == 'both':
         handlers.append(logging.StreamHandler(sys.stdout))
