@@ -3,6 +3,10 @@ import piexif.helper
 import numpy as np
 from skimage.metrics import structural_similarity as ssim
 import cv2
+import struct
+from PIL import Image, UnidentifiedImageError
+from tempfile import NamedTemporaryFile
+from pathlib import Path
 
 def image_append_exif_comment(image_file, comment):
     """
@@ -71,3 +75,88 @@ def image_ssim(img1, img2):
 
     # Return average SSIM
     return np.mean(ssim_scores)
+
+import struct
+import os
+import shutil
+from PIL import Image, UnidentifiedImageError
+
+def get_image_size(filepath):
+    """Attempts fast JPEG header parse, falls back to PIL."""
+    try:
+        with open(filepath, 'rb') as f:
+            if f.read(2) != b'\xff\xd8':
+                raise ValueError("Not a JPEG")
+            while True:
+                byte = f.read(1)
+                while byte and byte != b'\xff':
+                    byte = f.read(1)
+                while byte == b'\xff':
+                    byte = f.read(1)
+                if byte in [b'\xc0', b'\xc1', b'\xc2', b'\xc3', b'\xc5', b'\xc6', b'\xc7',
+                            b'\xc9', b'\xca', b'\xcb', b'\xcd', b'\xce', b'\xcf']:
+                    f.read(3)
+                    h, w = struct.unpack(">HH", f.read(4))
+                    return w, h
+                else:
+                    length = struct.unpack(">H", f.read(2))[0]
+                    f.read(length - 2)
+    except Exception:
+        try:
+            with Image.open(filepath) as img:
+                return img.width, img.height
+        except UnidentifiedImageError:
+            raise ValueError("Unsupported or corrupt image format")
+
+def get_file_size(path):
+    return os.path.getsize(path) if os.path.exists(path) else 0
+
+def image_copy_resize(filepath, max_width, max_height, max_bpp=2.5):
+    """Resize/transcode safely by writing to a temp file, then replacing the original."""
+
+    try:
+        width, height = get_image_size(filepath)
+    except Exception as e:
+        print(f"Warning: {e}, skipping.")
+        return False, get_file_size(filepath), get_file_size(filepath)
+
+    file_size_before = os.path.getsize(filepath)
+    bpp = file_size_before / (width * height)
+    needs_resize = width > max_width or height > max_height
+    needs_transcode = bpp > max_bpp
+
+    if not needs_resize and not needs_transcode:
+        return False, file_size_before, file_size_before
+
+    try:
+        with Image.open(filepath) as img:
+            exif_bytes = None
+            if "exif" in img.info:
+                try:
+                    exif_dict = piexif.load(img.info["exif"])
+                    exif_bytes = piexif.dump(exif_dict)
+                except Exception:
+                    pass
+
+            if needs_resize:
+                img.thumbnail((max_width, max_height), Image.LANCZOS)
+
+            with NamedTemporaryFile(suffix=".jpg", delete=False, dir=Path(filepath).parent) as tmp:
+                temp_path = tmp.name
+
+            save_args = {
+                "format": "JPEG",
+                "quality": 85,
+                "optimize": True,
+                "progressive": True,
+            }
+            if exif_bytes:
+                save_args["exif"] = exif_bytes
+
+            img.save(temp_path, **save_args)
+            os.replace(temp_path, filepath)
+            file_size_after = os.path.getsize(filepath)
+            return True, file_size_before, file_size_after
+    except Exception as e:
+        print(f"Error processing {filepath}: {e}")
+        return False, file_size_before, file_size_before
