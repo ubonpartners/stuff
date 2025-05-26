@@ -197,19 +197,20 @@ class inference_wrapper:
             return
 
          # Support MMDetection models
+        mmdet_path="/home/mark/stuff/ai/mmdetection/configs"
+        mmdet_models = {
+            "cascade-mask-rcnn_x101-64x4d_fpn_ms-3x": (mmdet_path+"/cascade_rcnn/cascade-mask-rcnn_x101-64x4d_fpn_ms-3x_coco.py",
+                    "https://download.openmmlab.com/mmdetection/v2.0/cascade_rcnn/cascade_mask_rcnn_x101_64x4d_fpn_mstrain_3x_coco/cascade_mask_rcnn_x101_64x4d_fpn_mstrain_3x_coco_20210719_210311-d3e64ba0.pth"),
+            "grounding-dino-b": (mmdet_path+"/grounding_dino/grounding_dino_swin-b_finetune_16xb2_1x_coco.py",
+                                "https://download.openmmlab.com/mmdetection/v3.0/grounding_dino/grounding_dino_swin-b_finetune_16xb2_1x_coco/grounding_dino_swin-b_finetune_16xb2_1x_coco_20230921_153201-f219e0c0.pth"),
+            "dino-5scale": (mmdet_path+"/dino/dino-5scale_swin-l_8xb2-36e_coco.py",
+                            "https://github.com/RistoranteRist/mmlab-weights/releases/download/dino-swinl/dino-5scale_swin-l_8xb2-36e_coco-5486e051.pth"),
+            "crowddet2": (mmdet_path+"/crowddet/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman.py",
+                        "https://download.openmmlab.com/mmdetection/v3.0/crowddet/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman_20221023_174954-dc319c2d.pth"),
+        }
+
         if model_name in mmdet_models:
             assert mmdet_ok, "try pip install 'mmdet' and 'mmengine'"
-            mmdet_path="/home/mark/stuff/ai/mmdetection/configs"
-            mmdet_models = {
-                "cascade-mask-rcnn_x101-64x4d_fpn_ms-3x": (mmdet_path+"/cascade_rcnn/cascade-mask-rcnn_x101-64x4d_fpn_ms-3x_coco.py",
-                        "https://download.openmmlab.com/mmdetection/v2.0/cascade_rcnn/cascade_mask_rcnn_x101_64x4d_fpn_mstrain_3x_coco/cascade_mask_rcnn_x101_64x4d_fpn_mstrain_3x_coco_20210719_210311-d3e64ba0.pth"),
-                "grounding-dino-b": (mmdet_path+"/grounding_dino/grounding_dino_swin-b_finetune_16xb2_1x_coco.py",
-                                    "https://download.openmmlab.com/mmdetection/v3.0/grounding_dino/grounding_dino_swin-b_finetune_16xb2_1x_coco/grounding_dino_swin-b_finetune_16xb2_1x_coco_20230921_153201-f219e0c0.pth"),
-                "dino-5scale": (mmdet_path+"/dino/dino-5scale_swin-l_8xb2-36e_coco.py",
-                                "https://github.com/RistoranteRist/mmlab-weights/releases/download/dino-swinl/dino-5scale_swin-l_8xb2-36e_coco-5486e051.pth"),
-                "crowddet2": (mmdet_path+"/crowddet/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman.py",
-                            "https://download.openmmlab.com/mmdetection/v3.0/crowddet/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman_20221023_174954-dc319c2d.pth"),
-            }
 
             cfg_path, weight_url = mmdet_models[model_name]
             self.mmdet_model = init_detector(cfg_path, weight_url, device="cuda:0")
