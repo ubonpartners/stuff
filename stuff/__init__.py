@@ -10,7 +10,7 @@ from .ultralytics import yolo_results_to_dets, draw_boxes, fold_detections_to_at
 from .ultralytics import map_one_gt_keypoints, map_keypoints, better_annotation, has_pose_points, has_face_points, is_large
 from .ultralytics import check_pose_points, get_face_triangle_points
 from .ultralytics_ap import ap_calc
-from .image import image_append_exif_comment, image_get_exif_comment, image_ssim, image_copy_resize
+from .image import image_append_exif_comment, image_get_exif_comment, image_ssim, image_copy_resize, get_image_size
 from .mp_workqueue import mp_workqueue_run, test_work
 from .reid import cosine_similarity
 from .augment import bt709_yuv420_augment, bt709_yuv420_augment_single

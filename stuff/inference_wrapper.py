@@ -1,10 +1,60 @@
 import ultralytics
+assert "__multilabel__" in dir(ultralytics) and ultralytics.__multilabel__==True, "Please use a verion of ultralytics that supports multilabel"
 import concurrent.futures
 import torch
 import copy
 import cv2
+import stuff.image as image_stuff
 import stuff.ultralytics as ultralytics_stuff
+import numpy as np
+import os
+import requests
+
 from ensemble_boxes import weighted_boxes_fusion
+try:
+    from rfdetr import RFDETRBase, RFDETRLarge
+    from rfdetr.util.coco_classes import COCO_CLASSES
+    rfdetr_ok=True
+except ImportError:
+    rfdetr_ok=False
+try:
+    from detectron2.engine import DefaultPredictor
+    from detectron2.config import get_cfg
+    from detectron2 import model_zoo
+    from detectron2.data import MetadataCatalog
+    from detectron2.data import MetadataCatalog
+    detectron2_ok=True
+except ImportError:
+    detectron2_ok=False
+try:
+    from mmdet.apis import init_detector, inference_detector
+    from mmengine.structures import InstanceData
+    mmdet_ok = True
+except ImportError:
+    mmdet_ok = False
+
+def download_mmdet_config(config_path, repo="https://raw.githubusercontent.com/open-mmlab/mmdetection/main/configs"):
+    """
+    Download MMDetection config if it doesn't exist locally.
+    Args:
+        config_path (str): Relative path like 'rtmdet/rtmdet-h_8xb32-300e_coco.py'
+        repo (str): Base URL to fetch from
+    Returns:
+        local_path (str): Path to saved config
+    """
+    config_dir = os.path.join("mmdetection", "configs")
+    local_path = os.path.join(config_dir, config_path)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+    if not os.path.isfile(local_path):
+        print(f"Downloading MMDetection config: {config_path}")
+        url = f"{repo}/{config_path}"
+        response = requests.get(url)
+        if response.status_code != 200:
+            raise FileNotFoundError(f"Failed to download config: {url}")
+        with open(local_path, "w") as f:
+            f.write(response.text)
+    return local_path
 
 def merge_detections_wbf(detectors_outputs, iou_thr=0.55, skip_box_thr=0.001):
     all_boxes = []
@@ -50,7 +100,10 @@ def ensemble_merge_results(results):
         out.append(merge_detections_wbf(dets))
     return out
 
-class ultralytics_wrapper:
+def github_blob_to_raw_url(blob_url):
+    return blob_url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+
+class inference_wrapper:
     class_synonyms={'person':['man','woman','boy','girl'],
                     'vehicle':['car','bicycle','motorcycle','train','truck','bus','airplane','boat'],
                     'animal':['cat','dog','horse','sheep','cow','bird','elephant','bear','zebra','giraffe'],
@@ -75,6 +128,29 @@ class ultralytics_wrapper:
                  fold_attributes=False):
 
         self.ensemble_models=None
+        self.class_names=class_names
+        self.yolo_batch_size=batch_size
+        self.yolo_num_params=0
+        self.yolo_num_flops=0
+        self.yolo_det_conf=thr
+        self.yolo_cache={}
+        self.num_threads=1
+        self.detectron2_predictor=None
+        self.rf_detr_model=None
+
+        # set model size
+        if ":" in model_name:
+            x=model_name.split(":")
+            model_name=x[0]
+            params=[x[1]]
+            if "," in x[1]:
+                params=x[1].split(",")
+            for p in params:
+                if p=="flip-lr":
+                    aug_params["flip-lr"]=True
+                else:
+                    imgsz=int(p)
+        self.imgsz=imgsz
 
         if model_name=="ensemble2":
             model_name=["/mldata/weights/good/yolo11l.pt:960",
@@ -87,18 +163,71 @@ class ultralytics_wrapper:
                         "/mldata/weights/good/yolov9e.pt:864",
                         "/mldata/weights/good/yolov9e.pt:960,flip-lr"]
 
+        # Support roboflow DETR models (https://github.com/roboflow/rf-detr)
+        if model_name=="RFDETR-B" or model_name=="RFDETR-L":
+            assert rfdetr_ok, "try pip install rfdetr"
+            if model_name=="RFDETR-B":
+                self.rf_detr_model=RFDETRBase(resolution=self.imgsz)
+            else:
+                self.rf_detr_model=RFDETRLarge(resolution=self.imgsz)
+            num_classes=max([i for i in COCO_CLASSES])+1
+
+            self.yolo_class_names=["-"]*num_classes
+            for i in COCO_CLASSES:
+                self.yolo_class_names[i]=COCO_CLASSES[i]
+            self.set_class_remap()
+            return
+
+        # Support models using detectron2
+        detectron2_models=["faster_rcnn_X_101_32x8d_FPN_3x",
+                           "faster_rcnn_R_101_FPN_3x"]
+        if model_name in detectron2_models:
+            assert detectron2_ok, "try python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'"
+            self.detectron2_cfg = get_cfg()
+            model="COCO-Detection/"+model_name+".yaml"
+            self.detectron2_cfg.merge_from_file(model_zoo.get_config_file(model))
+            self.detectron2_cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = self.yolo_det_conf  # confidence threshold
+            self.detectron2_cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(model)
+            self.detectron2_cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = nms_iou
+            self.detectron2_predictor = DefaultPredictor(self.detectron2_cfg)
+            metadata = MetadataCatalog.get(self.detectron2_cfg.DATASETS.TRAIN[0])
+            class_names = metadata.get("thing_classes", None)
+            self.yolo_class_names=class_names
+            self.set_class_remap()
+            return
+
+         # Support MMDetection models
+        if model_name in mmdet_models:
+            assert mmdet_ok, "try pip install 'mmdet' and 'mmengine'"
+            mmdet_path="/home/mark/stuff/ai/mmdetection/configs"
+            mmdet_models = {
+                "cascade-mask-rcnn_x101-64x4d_fpn_ms-3x": (mmdet_path+"/cascade_rcnn/cascade-mask-rcnn_x101-64x4d_fpn_ms-3x_coco.py",
+                        "https://download.openmmlab.com/mmdetection/v2.0/cascade_rcnn/cascade_mask_rcnn_x101_64x4d_fpn_mstrain_3x_coco/cascade_mask_rcnn_x101_64x4d_fpn_mstrain_3x_coco_20210719_210311-d3e64ba0.pth"),
+                "grounding-dino-b": (mmdet_path+"/grounding_dino/grounding_dino_swin-b_finetune_16xb2_1x_coco.py",
+                                    "https://download.openmmlab.com/mmdetection/v3.0/grounding_dino/grounding_dino_swin-b_finetune_16xb2_1x_coco/grounding_dino_swin-b_finetune_16xb2_1x_coco_20230921_153201-f219e0c0.pth"),
+                "dino-5scale": (mmdet_path+"/dino/dino-5scale_swin-l_8xb2-36e_coco.py",
+                                "https://github.com/RistoranteRist/mmlab-weights/releases/download/dino-swinl/dino-5scale_swin-l_8xb2-36e_coco-5486e051.pth"),
+                "crowddet2": (mmdet_path+"/crowddet/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman.py",
+                            "https://download.openmmlab.com/mmdetection/v3.0/crowddet/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman/crowddet-rcnn_r50_fpn_8xb2-30e_crowdhuman_20221023_174954-dc319c2d.pth"),
+            }
+
+            cfg_path, weight_url = mmdet_models[model_name]
+            self.mmdet_model = init_detector(cfg_path, weight_url, device="cuda:0")
+            self.yolo_class_names = self.mmdet_model.dataset_meta['classes']
+            self.set_class_remap()
+            return
 
         if isinstance(model_name, list):
             self.ensemble_models=[]
             for m in model_name:
-                yolo=ultralytics_wrapper(m,
-                                         class_names=class_names,
-                                         thr=thr,
-                                         nms_iou=nms_iou,
-                                         max_det=max_det,
-                                         rect=rect,
-                                         imgsz=imgsz,
-                                         batch_size=batch_size//2)
+                yolo=inference_wrapper(m,
+                                       class_names=class_names,
+                                       thr=thr,
+                                       nms_iou=nms_iou,
+                                       max_det=max_det,
+                                       rect=rect,
+                                       imgsz=imgsz,
+                                       batch_size=batch_size//2)
                 self.ensemble_models.append(yolo)
             self.num_threads=self.ensemble_models[0].num_threads
             self.yolo_batch_size=self.ensemble_models[0].yolo_batch_size
@@ -108,18 +237,6 @@ class ultralytics_wrapper:
             return
 
         aug_params={}
-        if ":" in model_name:
-            x=model_name.split(":")
-            model_name=x[0]
-            params=[x[1]]
-            if "," in x[1]:
-                params=x[1].split(",")
-            for p in params:
-                if p=="flip-lr":
-                    aug_params["flip-lr"]=True
-                else:
-                    imgsz=int(p)
-
         self.ensemble_models=None
         self.model=self.load_ultralytics_model(model_name)
         self.num_gpus=torch.cuda.device_count()
@@ -138,8 +255,6 @@ class ultralytics_wrapper:
         self.pose_kp=pose_kp
         self.facepose_kp=facepose_kp
         self.fold_attributes=fold_attributes
-
-        self.imgsz=imgsz
         self.yolo_cache={}
 
         for i in range(self.num_threads):
@@ -148,9 +263,11 @@ class ultralytics_wrapper:
             assert(self.yolo[i] is not None)
 
         self.yolo_class_names=[self.yolo[0].names[i] for i in range(len(self.yolo[0].names))]
-        self.det_class_remap=[-1]*len(self.yolo_class_names)
 
-        self.class_names=class_names
+        self.set_class_remap()
+
+    def set_class_remap(self):
+        self.det_class_remap=[-1]*len(self.yolo_class_names)
         if self.class_names is None:
             self.class_names=self.yolo_class_names
         self.can_detect=[False]*len(self.class_names)
@@ -210,13 +327,104 @@ class ultralytics_wrapper:
         #    self.yolo_num_params = 0
         return model
 
-    def infer(self, input_frames, thr=None):
+    def infer_rfdetr(self, input_frames, thr=None):
+        out_det=[]
+        #detections_list = self.rf_detr_model.predict(input_frames, threshold=self.yolo_det_conf)
+        detections_list=[]
+        for i in input_frames:
+            detections_list.append(self.rf_detr_model.predict(i, threshold=self.yolo_det_conf))
+        ret=[]
+        for j,detections in enumerate(detections_list):
+            num_detections=len(detections.xyxy)
+            out_det=[]
+            w,h=image_stuff.get_image_size(input_frames[j])
+            for i in range(num_detections):
+                xyxy=detections.xyxy[i]
+                box=[xyxy[0]/w, xyxy[1]/h, xyxy[2]/w, xyxy[3]/h]
+                #print(int(detections.class_id[i]), COCO_CLASSES[detections.class_id[i]])
+                det={"box":box,
+                    "id":None,
+                    "class":self.det_class_remap[int(detections.class_id[i]+0.01)],
+                    "confidence":detections.confidence[i]}
+                out_det.append(det)
+            ret.append(out_det)
+        return ret
 
+    def infer_mmdet(self, input_frames, thr=None):
+        ret = []
+        for img in input_frames:
+            if isinstance(img, str):
+                image = cv2.imread(img)
+            else:
+                image = img
+
+            w,h=image_stuff.get_image_size(image)
+            det_sample = inference_detector(self.mmdet_model, image)
+            # Extract instances (boxes, labels, scores)
+            instances = det_sample.pred_instances  # InstanceData object
+            boxes = instances.bboxes.cpu().numpy()        # shape: [N, 4]
+            scores = instances.scores.cpu().numpy()       # shape: [N]
+            labels = instances.labels.cpu().numpy()       # shape: [N]
+
+            out_det = []
+            for box, score, label in zip(boxes, scores, labels):
+                if score < self.yolo_det_conf:
+                    continue
+                box_norm = [box[0]/w, box[1]/h, box[2]/w, box[3]/h]
+                out_det.append({
+                    "box": box_norm,
+                    "id": None,
+                    "class": self.det_class_remap[int(label)],
+                    "confidence": score
+                })
+            ret.append(out_det)
+        return ret
+
+    def infer_detectron2(self, input_frames, thr=None):
+        ret=[]
+        for i in input_frames:
+            if not isinstance(i, np.ndarray):
+                image = cv2.imread(i)
+            else:
+                image=i
+
+            # Run detection
+            outputs = self.detectron2_predictor(image)
+            # Extract only person boxes
+            instances = outputs["instances"]
+            person_scores = instances.scores.cpu().numpy()
+            boxes = instances.pred_boxes.tensor.cpu().numpy()
+            pred_classes = instances.pred_classes.cpu().numpy()
+            w,h=image_stuff.get_image_size(i)
+            out_det=[]
+            for i in range(len(boxes)):
+                xyxy=boxes[i]
+                box=[xyxy[0]/w, xyxy[1]/h, xyxy[2]/w, xyxy[3]/h]
+                det={"box":box,
+                    "id":None,
+                    "class":self.det_class_remap[pred_classes[i]],
+                    "confidence":person_scores[i]}
+                out_det.append(det)
+            ret.append(out_det)
+            #print(boxes,person_scores)
+            #print(f"thr {self.yolo_det_conf}")
+        return ret
+
+    def infer(self, input_frames, thr=None):
         if self.ensemble_models is not None:
             results=[]
             for m in self.ensemble_models:
                 results.append(m.infer(input_frames, thr=thr))
             return ensemble_merge_results(results)
+
+        if self.rf_detr_model!=None:
+            return self.infer_rfdetr(input_frames, thr)
+
+        if self.detectron2_predictor is not None:
+            return self.infer_detectron2(input_frames, thr)
+
+        if hasattr(self, "mmdet_model"):
+            return self.infer_mmdet(input_frames, thr)
 
         def process_batch(yolo_fn, frames, params):
             if params is not None:

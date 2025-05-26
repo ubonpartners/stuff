@@ -7,6 +7,8 @@ import struct
 from PIL import Image, UnidentifiedImageError
 from tempfile import NamedTemporaryFile
 from pathlib import Path
+import os
+import cv2
 
 def image_append_exif_comment(image_file, comment):
     """
@@ -76,13 +78,14 @@ def image_ssim(img1, img2):
     # Return average SSIM
     return np.mean(ssim_scores)
 
-import struct
-import os
-import shutil
-from PIL import Image, UnidentifiedImageError
-
 def get_image_size(filepath):
     """Attempts fast JPEG header parse, falls back to PIL."""
+
+    # in case a loaded image was passed instead of a file path
+    if isinstance(filepath, np.ndarray) and filepath.ndim in (2, 3):
+        h, w, _ = filepath.shape
+        return w, h
+
     try:
         with open(filepath, 'rb') as f:
             if f.read(2) != b'\xff\xd8':
