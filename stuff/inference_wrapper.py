@@ -10,29 +10,6 @@ import numpy as np
 import os
 import requests
 
-from ensemble_boxes import weighted_boxes_fusion
-try:
-    from rfdetr import RFDETRBase, RFDETRLarge
-    from rfdetr.util.coco_classes import COCO_CLASSES
-    rfdetr_ok=True
-except ImportError:
-    rfdetr_ok=False
-try:
-    from detectron2.engine import DefaultPredictor
-    from detectron2.config import get_cfg
-    from detectron2 import model_zoo
-    from detectron2.data import MetadataCatalog
-    from detectron2.data import MetadataCatalog
-    detectron2_ok=True
-except ImportError:
-    detectron2_ok=False
-try:
-    from mmdet.apis import init_detector, inference_detector
-    from mmengine.structures import InstanceData
-    mmdet_ok = True
-except ImportError:
-    mmdet_ok = False
-
 def download_mmdet_config(config_path, repo="https://raw.githubusercontent.com/open-mmlab/mmdetection/main/configs"):
     """
     Download MMDetection config if it doesn't exist locally.
@@ -57,6 +34,7 @@ def download_mmdet_config(config_path, repo="https://raw.githubusercontent.com/o
     return local_path
 
 def merge_detections_wbf(detectors_outputs, iou_thr=0.55, skip_box_thr=0.001):
+    from ensemble_boxes import weighted_boxes_fusion
     all_boxes = []
     all_scores = []
     all_labels = []
@@ -165,7 +143,11 @@ class inference_wrapper:
 
         # Support roboflow DETR models (https://github.com/roboflow/rf-detr)
         if model_name=="RFDETR-B" or model_name=="RFDETR-L":
-            assert rfdetr_ok, "try pip install rfdetr"
+            try:
+                from rfdetr import RFDETRBase, RFDETRLarge
+                from rfdetr.util.coco_classes import COCO_CLASSES
+            except ImportError:
+                assert False, "try pip install rfdetr"
             if model_name=="RFDETR-B":
                 self.rf_detr_model=RFDETRBase(resolution=self.imgsz)
             else:
@@ -182,6 +164,14 @@ class inference_wrapper:
         detectron2_models=["faster_rcnn_X_101_32x8d_FPN_3x",
                            "faster_rcnn_R_101_FPN_3x"]
         if model_name in detectron2_models:
+            try:
+                from detectron2.engine import DefaultPredictor
+                from detectron2.config import get_cfg
+                from detectron2 import model_zoo
+                from detectron2.data import MetadataCatalog
+                detectron2_ok=True
+            except ImportError:
+                detectron2_ok=False
             assert detectron2_ok, "try python -m pip install 'git+https://github.com/facebookresearch/detectron2.git'"
             self.detectron2_cfg = get_cfg()
             model="COCO-Detection/"+model_name+".yaml"
@@ -210,9 +200,15 @@ class inference_wrapper:
         }
 
         if model_name in mmdet_models:
-            assert mmdet_ok, "try pip install 'mmdet' and 'mmengine'"
+            try:
+                from mmdet.apis import init_detector
+                from mmengine.structures import InstanceData
+                from mmdet.apis import inference_detector
+            except ImportError:
+                assert False, "try pip install 'mmdet' and 'mmengine'"
 
             cfg_path, weight_url = mmdet_models[model_name]
+            self.mmdet_inference_detector=inference_detector
             self.mmdet_model = init_detector(cfg_path, weight_url, device="cuda:0")
             self.yolo_class_names = self.mmdet_model.dataset_meta['classes']
             self.set_class_remap()
@@ -322,10 +318,6 @@ class inference_wrapper:
             self.yolo_num_params=info[1]
             self.yolo_num_flops=info[3]
 
-        #try:
-        #    self.yolo_num_params = sum(p.numel() for p in self.yolo[0].model.parameters())
-        #except AttributeError:
-        #    self.yolo_num_params = 0
         return model
 
     def infer_rfdetr(self, input_frames, thr=None):
@@ -360,7 +352,7 @@ class inference_wrapper:
                 image = img
 
             w,h=image_stuff.get_image_size(image)
-            det_sample = inference_detector(self.mmdet_model, image)
+            det_sample = self.mmdet_inference_detector(self.mmdet_model, image)
             # Extract instances (boxes, labels, scores)
             instances = det_sample.pred_instances  # InstanceData object
             boxes = instances.bboxes.cpu().numpy()        # shape: [N, 4]

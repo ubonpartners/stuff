@@ -1,7 +1,6 @@
 import piexif
 import piexif.helper
 import numpy as np
-from skimage.metrics import structural_similarity as ssim
 import cv2
 import struct
 from PIL import Image, UnidentifiedImageError
@@ -61,6 +60,10 @@ def image_get_exif_comment(image_file):
     return user_comment
 
 def image_ssim(img1, img2):
+    try:
+        from skimage.metrics import structural_similarity as ssim
+    except ImportError:
+        raise ImportError("Please install scikit-image to use image_ssim function: pip install scikit-image")
     # Resize if necessary
     if img1.shape != img2.shape:
         img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]))

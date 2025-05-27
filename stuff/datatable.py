@@ -1,8 +1,7 @@
-import pandas as pd
-import tabulate
-import shutil
+
 import math
 from collections import defaultdict
+import numpy as np
 
 def colorize(val, minval, maxval):
     if not isinstance(val, (int, float)) or math.isnan(val):
@@ -35,9 +34,23 @@ def show_data(results_in, columns, column_text, sort_fn, section_key="dataset"):
     else:
         results = results_in
 
+    try:
+        import pandas as pd
+    except ImportError:
+        raise ImportError("Please install pandas: pip install pandas")
     df = pd.DataFrame(results, columns=columns)
 
-    df_rounded = df.round(3)
+    def round_sf(x, sig=3):
+        if isinstance(x, (int, float, np.floating)) and not (np.isnan(x) or np.isinf(x)) and x != 0:
+            if (abs(x)<1):
+                rounded=round(x,3)
+            else:
+                rounded = round(x, sig - int(math.floor(math.log10(abs(x)))) - 1)
+            return int(rounded) if (abs(rounded-int(rounded)<0.001)) else rounded
+        return x  # Leave NaN, inf, and non-numerics unchanged
+
+    df_rounded = df.applymap(lambda x: round_sf(x, sig=3))
+    #df_rounded = df.round(3)
     df_rounded = df_rounded.fillna('')
 
     data=df_rounded.to_dict(orient='records')
@@ -78,6 +91,12 @@ def show_data(results_in, columns, column_text, sort_fn, section_key="dataset"):
         output_rows.append(['-']+[''] * (len(columns)-1))  # Empty line
 
     tablefmt = "minpadding"
+
+    try:
+        import tabulate
+    except ImportError:
+        raise ImportError("Please install tabulate: pip install tabulate")
+
     tabulate._table_formats[tablefmt] = tabulate.TableFormat(
         lineabove=tabulate.Line("", "-", " ", ""),
         linebelowheader=tabulate.Line("", "-", " ", ""),

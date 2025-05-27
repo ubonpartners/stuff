@@ -1,21 +1,25 @@
-import cairo
 import numpy as np
 import time
 import stuff.coord as coord
 
 class ARGBdraw:
     def __init__(self, width, height):
+        try:
+            import cairo as cairo
+            self.cairo=cairo
+        except ImportError:
+            raise ImportError("cairo is not installed. Try 'pip install pycairo'.")
         self.width = width
         self.height = height
-        self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-        self.ctx = cairo.Context(self.surface)
+        self.surface = self.cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        self.ctx = self.cairo.Context(self.surface)
         self.clear()
 
     def clear(self):
         """Clear the surface to fully transparent."""
-        self.ctx.set_operator(cairo.OPERATOR_CLEAR)
+        self.ctx.set_operator(self.cairo.OPERATOR_CLEAR)
         self.ctx.paint()
-        self.ctx.set_operator(cairo.OPERATOR_OVER)
+        self.ctx.set_operator(self.cairo.OPERATOR_OVER)
 
     def _set_color(self, clr):
         colours={"red":[0,0,255],
@@ -98,7 +102,7 @@ class ARGBdraw:
         x = self.width * pos[0]
         y = self.height * pos[1]
 
-        self.ctx.select_font_face(font_face, cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_NORMAL)
+        self.ctx.select_font_face(font_face, self.cairo.FONT_SLANT_NORMAL, self.cairo.FONT_WEIGHT_NORMAL)
         self.ctx.set_font_size(font_size)
 
         lines = text.split('\n')
@@ -134,8 +138,8 @@ class ARGBdraw:
         The result is still premultiplied ARGB.
         """
         # Create a new surface of target size
-        scaled_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
-        ctx = cairo.Context(scaled_surface)
+        scaled_surface = self.cairo.ImageSurface(self.cairo.FORMAT_ARGB32, width, height)
+        ctx = self.cairo.Context(scaled_surface)
 
         # Set up scaling transform
         scale_x = width / self.width
