@@ -26,7 +26,9 @@ def colorize(val, minval, maxval):
         return f"\033[2;31m{val}\033[0m"  # dim red
     return str(val)
 
-def show_data(results_in, columns, column_text, sort_fn, section_key="dataset"):
+def show_data(results_in, columns, column_text, sort_fn,
+              section_key="dataset",
+              add_section_dividers=True):
     #console_width = shutil.get_terminal_size().columns
 
     if sort_fn:
@@ -49,15 +51,17 @@ def show_data(results_in, columns, column_text, sort_fn, section_key="dataset"):
             return int(rounded) if (abs(rounded-int(rounded)<0.001)) else rounded
         return x  # Leave NaN, inf, and non-numerics unchanged
 
-    df_rounded = df.applymap(lambda x: round_sf(x, sig=3))
-    #df_rounded = df.round(3)
+    df_rounded = df.map(lambda x: round_sf(x, sig=3))
     df_rounded = df_rounded.fillna('')
 
     data=df_rounded.to_dict(orient='records')
     # Step 1: Group by section_key
     grouped = defaultdict(list)
     for row in data:
-        grouped[row[section_key]].append(row)
+        if section_key is None or not section_key in row:
+            grouped["No Section"].append(row)
+        else:
+            grouped[row[section_key]].append(row)
 
     output_rows = []
     for section, rows in grouped.items():
@@ -88,7 +92,8 @@ def show_data(results_in, columns, column_text, sort_fn, section_key="dataset"):
             output_rows.append(display_row)
 
         # Optional: add separator line or empty line between sections
-        output_rows.append(['-']+[''] * (len(columns)-1))  # Empty line
+        if add_section_dividers and len(rows)>1:
+            output_rows.append(['-']+[''] * (len(columns)-1))  # Empty line
 
     tablefmt = "minpadding"
 
