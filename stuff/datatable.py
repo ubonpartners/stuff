@@ -118,3 +118,4 @@ def show_data(results_in, columns, column_text, sort_fn,
     table_str=tabulate.tabulate(output_rows, headers=column_text, tablefmt=tablefmt)
     #width = max(len(line) for line in table_str.splitlines())
     print("\n"+table_str)
+    return table_str
