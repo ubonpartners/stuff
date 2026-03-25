@@ -1,0 +1,191 @@
+import os
+import sys
+import json
+import shutil
+from pathlib import Path
+import yaml
+import pickle
+import subprocess
+import shlex
+import logging
+import time
+from datetime import datetime
+
+
+def makedir(path: str) -> None:
+    """
+    Create a directory, including any necessary parent directories.
+
+    Args:
+        path (str): The directory path to create.
+    """
+    Path(path).mkdir(parents=True, exist_ok=True)
+
+def rename(source: str, destination: str) -> None:
+    """
+    Rename a file or directory.
+
+    Args:
+        source (str): The current name/path of the file or directory.
+        destination (str): The new name/path for the file or directory.
+    """
+    os.rename(source, destination)
+
+def rm(file_path: str) -> None:
+    """
+    Remove a file from the filesystem.
+
+    Args:
+        file_path (str): The path to the file to be removed.
+    """
+    os.remove(file_path)
+
+def rmdir(directory_path: str) -> None:
+    """
+    Recursively remove a directory and all of its contents.
+
+    Args:
+        directory_path (str): The directory path to remove.
+    """
+    if os.path.isdir(directory_path):
+        try:
+            shutil.rmtree(directory_path)
+        except OSError as error:
+            print(f"Error removing directory '{error.filename}': {error.strerror}")
+
+def load_dictionary(file_name: str):
+    """
+    Load a dictionary from a JSON or YAML file.
+
+    This function automatically determines the file format based on the file extension.
+
+    Args:
+        file_name (str): The path to the file (JSON, YML, or YAML) to load.
+
+    Returns:
+        dict: The loaded dictionary if successful, otherwise None.
+    """
+    if file_name.endswith(".json"):
+        with open(file_name, 'r') as json_file:
+            return json.load(json_file)
+    elif file_name.endswith((".yml", ".yaml")):
+        with open(file_name, 'r') as yaml_file:
+            try:
+                return yaml.load(yaml_file, Loader=yaml.CSafeLoader)
+            except yaml.YAMLError as exc:
+                print(f"Error loading YAML file '{file_name}': {exc}")
+                exit(1)
+    else:
+        print(f"Unsupported file extension for file: {file_name}")
+        return None
+
+def save_atomic_pickle(data, filename):
+    """
+    Pickles 'data' to filename atomically
+    """
+    dname = os.path.dirname(filename)
+    os.makedirs(dname, exist_ok=True)
+    temp_filename=filename+".tmp"
+    if os.path.isfile(temp_filename):
+        rm(temp_filename)
+    with open(temp_filename, 'wb') as handle:
+        pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        rename(temp_filename, filename) # atomic, replaces any existing file
+
+def timestr(delta):
+    delta=int(delta)
+    s=delta%60
+    m=(delta//60)%60
+    h=delta//3600
+    r=f"{m:02d}:{s:02d}"
+    if h!=0:
+        r=f"{h:02d}:"+r
+    return r
+
+def get_dict_param(dict, name, default):
+    if dict is not None and name in dict:
+        return dict[name]
+    return default
+
+def run_cmd(cmd, debug=False, env=None, timeout=240, num_attempts=3):
+    if isinstance(cmd, str):
+        cmd=shlex.split(cmd)
+    if env is None:
+        env = os.environ.copy()
+
+    if debug:
+        result=subprocess.run(cmd, env=env)
+        return result.returncode
+    for attempt in range(num_attempts):
+        try:
+            result=subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as e:
+            print(f"⚠️ Command {cmd} attempt {attempt} timed out after {timeout} seconds")
+            print(f"\n STDOUT: {e.stdout}")
+            print(f" STDERR: {e.stderr}")
+            print("======================\n")
+            if attempt+1==num_attempts:
+                sys.exit(1)
+            print("Retrying....")
+            continue
+        stdout_str = result.stdout
+        stderr_str = result.stderr
+        if result.returncode!=0:
+            print(f"⚠️ Command {cmd} attempt {attempt} failed returncode {result.returncode}")
+            print(f"\n STDOUT: {stdout_str}")
+            print(f" STDERR: {stderr_str}")
+            print("======================\n")
+            if attempt+1==num_attempts:
+                sys.exit(1)
+            print("Retrying....")
+            continue
+        break
+    return 0 # assuming success
+
+def configure_root_logger(config_str, log_dir=None):
+    """Configure the root logger based on a string like 'info' or 'debug:file'.
+    Args:
+        config_str (str): The logging configuration string.
+            It can be a single level (e.g., 'info') or a combination of level and output (e.g., 'debug:file').
+            The output can be 'console' or 'file'.
+        log_dir (str): Logging output directory for file based logger
+    """
+    parts = config_str.lower().split(':')
+    level_str = parts[0]
+    output = parts[1] if len(parts) > 1 else 'console'
+    if log_dir is None:
+        log_dir = os.getcwd()
+
+    # Map string to logging level
+    levels = {
+        'debug': logging.DEBUG,
+        'info': logging.INFO,
+        'warning': logging.WARNING,
+        'error': logging.ERROR,
+        'critical': logging.CRITICAL,
+    }
+    level = levels.get(level_str, logging.INFO)
+
+    # Create the handler
+    handlers=[]
+    if output == 'file' or output == 'both':
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        filename = f"{log_dir}/log_{timestamp}.log"
+        handlers.append(logging.FileHandler(filename))
+    if output == 'console' or output == 'both':
+        handlers.append(logging.StreamHandler(sys.stdout))
+
+    # Configure the root logger
+    logging.basicConfig(
+        level=level,
+        handlers=handlers,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+def format_seconds_ago(s):
+    if s is None or s<=0:
+        return " "
+    return "Now" if s < 60 else f"{int(s/60)}m" if s<3600 else f"{int(s/3600)}h" if s < 86400 else f"{int(s/86400)}d"
+
+def name_from_file(x):
+    return os.path.splitext(os.path.basename(x))[0]
