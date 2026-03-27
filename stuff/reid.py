@@ -1,5 +1,7 @@
-import torch
-import torch.nn.functional as F
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import torch
 
 def cosine_similarity(vec1: torch.Tensor, vec2: torch.Tensor) -> float:
     """
@@ -12,6 +14,9 @@ def cosine_similarity(vec1: torch.Tensor, vec2: torch.Tensor) -> float:
     Returns:
         float: Cosine similarity between vec1 and vec2.
     """
+    import torch
+    import torch.nn.functional as F
+
     if vec1 is None or vec2 is None:
         return 0
 

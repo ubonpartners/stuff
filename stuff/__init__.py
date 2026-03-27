@@ -138,7 +138,7 @@ from .embedding import (
 from .facerec import get_sface_embedding
 
 # Google Drive sync
-from .gdrive import gdrive_sync_mldata
+from .gdrive import gdrive_delete_folders_with_prefix, gdrive_sync_mldata
 
 # Image deduplication
 from .img_dedup import ImgDedup
@@ -248,6 +248,7 @@ __all__ = [
     # Face recognition
     "get_sface_embedding",
     # Google Drive
+    "gdrive_delete_folders_with_prefix",
     "gdrive_sync_mldata",
     # Image deduplication
     "ImgDedup",

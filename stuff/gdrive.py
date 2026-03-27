@@ -5,7 +5,7 @@ import time
 import tarfile
 import mimetypes
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, Tuple, Optional, List
 from tqdm import tqdm
 from collections import deque
@@ -157,9 +157,14 @@ class DriveSync:
         )
         resp = self.svc.files().list(
             q=q, corpora="drive", driveId=self.drive_id,
-            fields="files(id,name)", pageSize=10, **self.flags
+            fields="files(id,name,createdTime)", orderBy="createdTime asc", pageSize=2, **self.flags
         ).execute()
         files = resp.get("files", [])
+        if len(files) > 1:
+            ids = ", ".join(f.get("id", "?") for f in files)
+            raise RuntimeError(
+                f"Ambiguous Drive folder path: multiple folders named '{name}' under parent '{parent_id}' (ids: {ids})"
+            )
         return files[0]["id"] if files else None
 
     def list_files_in(self, parent_id: str) -> List[dict]:
@@ -176,10 +181,58 @@ class DriveSync:
             request = self.svc.files().list_next(request, resp)
         return out
 
+    def list_folders_in(self, parent_id: str) -> List[dict]:
+        request = self.svc.files().list(
+            q=f"'{parent_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'",
+            corpora="drive",
+            driveId=self.drive_id,
+            fields="nextPageToken, files(id,name,createdTime)",
+            orderBy="name asc",
+            pageSize=1000,
+            **self.flags,
+        )
+        out = []
+        while request is not None:
+            resp = _retry(lambda: request.execute())
+            out.extend(resp.get("files", []))
+            request = self.svc.files().list_next(request, resp)
+        return out
+
 
 # ================================
 # Public API (OAuth only)
 # ================================
+def _build_drive_service(
+    client_secret: Optional[str],
+    token_path: Optional[str],
+    headless: bool,
+    scopes,
+):
+    from googleapiclient.discovery import build
+    try:
+        from google.oauth2.credentials import Credentials
+        if token_path and os.path.exists(token_path):
+            creds = Credentials.from_authorized_user_file(token_path, scopes)
+        else:
+            raise FileNotFoundError
+        if not creds.valid and getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
+            from google.auth.transport.requests import Request
+
+            creds.refresh(Request())
+            if token_path:
+                with open(token_path, "w") as f:
+                    f.write(creds.to_json())
+    except Exception:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+
+        flow = InstalledAppFlow.from_client_secrets_file(client_secret, scopes)
+        creds = flow.run_console() if headless else flow.run_local_server(port=0)
+        if token_path:
+            with open(token_path, "w") as f:
+                f.write(creds.to_json())
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
 def gdrive_sync_mldata(
     local_path: str,
     direction: str = "from_drive",            # "to_drive" or "from_drive"
@@ -197,25 +250,7 @@ def gdrive_sync_mldata(
     If local_path is a file: versioned single-file sync (no tar).
     """
     # --- Build Drive service via OAuth ---
-    from googleapiclient.discovery import build
-    try:
-        from google.oauth2.credentials import Credentials
-        if token_path and os.path.exists(token_path):
-            creds = Credentials.from_authorized_user_file(token_path, scopes)
-        else:
-            raise FileNotFoundError
-        if not creds.valid and getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
-            from google.auth.transport.requests import Request
-            creds.refresh(Request())
-    except Exception:
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        flow = InstalledAppFlow.from_client_secrets_file(client_secret, scopes)
-        creds = flow.run_console() if headless else flow.run_local_server(port=0)
-        if token_path:
-            with open(token_path, "w") as f:
-                f.write(creds.to_json())
-
-    service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    service = _build_drive_service(client_secret=client_secret, token_path=token_path, headless=headless, scopes=scopes)
 
     # --- Path checks and remote path resolution ---
     lp = Path(local_path).resolve()
@@ -269,6 +304,55 @@ def gdrive_sync_mldata(
                 return
     else:
         raise ValueError("direction must be 'to_drive' or 'from_drive'")
+
+
+def gdrive_delete_folders_with_prefix(
+    prefix: str,
+    *,
+    parent_folder_id: Optional[str] = None,
+    drive_id: Optional[str] = DRIVE_ID,
+    client_secret: Optional[str] = "/mldata/gdrive/client_secret.json",
+    token_path: Optional[str] = "/mldata/gdrive/token.json",
+    headless: bool = False,
+    scopes=("https://www.googleapis.com/auth/drive",),
+    dry_run: bool = False,
+) -> Dict[str, object]:
+    """
+    Delete all folders whose names start with `prefix` under a given Drive parent (default: shared-drive root).
+    Returns a summary dictionary.
+    """
+    if not isinstance(prefix, str) or not prefix:
+        raise ValueError("prefix must be a non-empty string")
+
+    service = _build_drive_service(client_secret=client_secret, token_path=token_path, headless=headless, scopes=scopes)
+    drive = DriveSync(service, drive_id)
+    parent_id = parent_folder_id or drive.root_id
+
+    folders = drive.list_folders_in(parent_id)
+    matches = [f for f in folders if str(f.get("name", "")).startswith(prefix)]
+    if not matches:
+        print(f"Gdrive_sync: No folders found with prefix '{prefix}' under parent '{parent_id}'.")
+        return {"parent_id": parent_id, "prefix": prefix, "matched": 0, "deleted": 0, "folders": []}
+
+    deleted = []
+    for f in matches:
+        name = f.get("name", "")
+        file_id = f.get("id", "")
+        if dry_run:
+            print(f"[dry-run] Would delete folder: {name} ({file_id})")
+        else:
+            print(f"Deleting folder: {name} ({file_id})")
+            _retry(lambda fid=file_id: drive.svc.files().delete(fileId=fid, supportsAllDrives=True).execute())
+        deleted.append({"id": file_id, "name": name})
+
+    return {
+        "parent_id": parent_id,
+        "prefix": prefix,
+        "matched": len(matches),
+        "deleted": 0 if dry_run else len(matches),
+        "folders": deleted,
+        "dry_run": bool(dry_run),
+    }
 
 
 # ================================
@@ -399,9 +483,10 @@ def _sync_drive_tar_to_folder(
     local_base.mkdir(parents=True, exist_ok=True)  # ensure it exists before extract
     with tarfile.open(tar_local_path, "r") as tf:
         members = tf.getmembers()
+        for m in members:
+            _validate_tar_member(m, latest["name"])
         with tqdm(total=len(members), desc="Extracting", unit="file") as bar:
             for m in members:
-                (local_base / m.name).parent.mkdir(parents=True, exist_ok=True)
                 tf.extract(m, path=local_base)
                 bar.update(1)
     print("Extraction complete.")
@@ -553,3 +638,17 @@ def _retry(fn, retries: int = 6, base_delay: float = 0.8):
         except Exception:
             time.sleep(base_delay * (2 ** attempt) + 0.1 * (attempt + 1))
     return fn()
+
+
+def _validate_tar_member(member: tarfile.TarInfo, tar_name: str) -> None:
+    """
+    Fast safety checks for tar extraction to prevent path traversal or special-file creation.
+    Keeps overhead low for very large archives.
+    """
+    p = PurePosixPath(member.name)
+    if p.is_absolute() or ".." in p.parts:
+        raise RuntimeError(f"Unsafe tar member path '{member.name}' in '{tar_name}'")
+    if member.issym() or member.islnk() or member.ischr() or member.isblk() or member.isfifo():
+        raise RuntimeError(f"Unsupported/special tar member '{member.name}' in '{tar_name}'")
+    if not (member.isdir() or member.isfile()):
+        raise RuntimeError(f"Unsupported tar member type '{member.name}' in '{tar_name}'")
