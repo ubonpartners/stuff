@@ -242,7 +242,7 @@ def mp4_to_h26x(input_path, max_width, max_height, target_fps, codec='h264', out
         'ffmpeg', '-i', input_path,
         '-vf', ','.join(vf_filters),
         '-vsync', 'vfr',
-        '-r', str(new_fps),
+    #    '-r', str(new_fps),
         '-c:v', 'libx264' if codec == 'h264' else 'libx265',
         '-preset', 'medium',
         ('-x264-params' if codec == 'h264' else '-x265-params'),
