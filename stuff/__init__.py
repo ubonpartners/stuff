@@ -105,7 +105,7 @@ from .augment import bt709_yuv420_augment, bt709_yuv420_augment_single
 from .datatable import show_data
 
 # Inference wrappers
-from .inference_wrapper import infer_model_name, inference_wrapper
+from .inference_wrapper import InferenceWrapper, infer_model_name, inference_wrapper
 
 # Grid-based inference
 from .infer_grid import create_image_grid, infer_grid
@@ -224,6 +224,7 @@ __all__ = [
     "show_data",
     # Inference
     "infer_model_name",
+    "InferenceWrapper",
     "inference_wrapper",
     # Grid inference
     "create_image_grid",
