@@ -134,6 +134,9 @@ from .embedding import (
     get_jpeg_embeddings,
 )
 
+# Engine metadata helpers
+from .engine import build_yolo_engine_metadata_from_pt, read_engine_metadata, write_engine_with_metadata
+
 # Face recognition
 from .facerec import get_sface_embedding
 
@@ -246,6 +249,10 @@ __all__ = [
     "clip_encode_text",
     "cosine_similarities_to_probabilities",
     "get_jpeg_embeddings",
+    # Engine metadata
+    "build_yolo_engine_metadata_from_pt",
+    "read_engine_metadata",
+    "write_engine_with_metadata",
     # Face recognition
     "get_sface_embedding",
     # Google Drive

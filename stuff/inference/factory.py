@@ -82,6 +82,12 @@ def create_backend(model_spec, config, class_synonyms):
         return MMDetBackend(model_name, config)
 
     if model_name.endswith(".trt"):
+        raise ValueError(
+            "Direct .trt detector models are no longer supported. "
+            "Use a metadata-wrapped .engine file instead."
+        )
+
+    if model_name.endswith(".engine"):
         return UPYCTrtBackend(model_name, model_spec.model_name_list, config)
 
     if model_name == "upyc_track":

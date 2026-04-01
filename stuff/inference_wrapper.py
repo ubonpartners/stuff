@@ -60,8 +60,6 @@ def infer_model_name(x):
             ext += t[1] + " "
         if x.endswith(".engine"):
             ext += "TRT "
-        if x.endswith(".trt"):
-            ext += "UPYC "
         if len(ext) > 0:
             ext = "(" + ext[:-1] + ")"
     return os.path.splitext(os.path.basename(x))[0] + ext

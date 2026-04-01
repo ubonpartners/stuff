@@ -24,10 +24,12 @@ class UPYCTrtBackend(InferenceBackend):
         self.thr = config.thr
         self.fold_attributes = config.fold_attributes
 
-        param_file = ""
+        if not isinstance(model_name, str) or not model_name.endswith(".engine"):
+            raise AssertionError(f"UPYC detector backend requires a .engine model, got: {model_name}")
         if len(model_name_list) > 1:
-            param_file = model_name_list[1]
-        self.upyc_infer = upyc.c_infer(model_name, param_file)
+            raise AssertionError("UPYC .engine detector backend no longer accepts a second parameter")
+
+        self.upyc_infer = upyc.c_infer(model_name)
         self.model_description = self.upyc_infer.get_model_description()
         self.model_description["engineInfo"] = json.loads(self.model_description["engineInfo"])
 
