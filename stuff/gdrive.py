@@ -17,6 +17,7 @@ from datetime import datetime
 # CONFIG: your Shared Drive ID
 # ================================
 DRIVE_ID = "0AEhZOUisyqrNUk9PVA"  # <-- your MLData Shared Drive
+EXCLUDED_FILE_SUFFIXES = (".cache",)
 
 
 # Transfer tuning knobs (override via env if needed).
@@ -67,6 +68,11 @@ def guess_mime(path: Path) -> str:
     return mime or "application/octet-stream"
 
 
+def _is_sync_excluded(path: Path) -> bool:
+    """Return True if this file should be excluded from hash/upload workflows."""
+    return path.name.endswith(EXCLUDED_FILE_SUFFIXES)
+
+
 # ---------- Tree/file hashing ----------
 def compute_tree_hash(local_base: Path, checksum: bool = True) -> Tuple[str, List[Tuple[str, int, int, Optional[str]]]]:
     """
@@ -79,6 +85,8 @@ def compute_tree_hash(local_base: Path, checksum: bool = True) -> Tuple[str, Lis
         for fn in filenames:
             p = Path(root) / fn
             if not p.is_file():
+                continue
+            if _is_sync_excluded(p):
                 continue
             rel = str(p.relative_to(local_base)).replace("\\", "/")
             st = p.stat()
@@ -552,6 +560,10 @@ def _sync_file_to_drive_versioned(
     upload_chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
 ):
     from googleapiclient.http import MediaFileUpload
+
+    if _is_sync_excluded(local_file):
+        print(f"Gdrive_sync: Skipping excluded file {local_file}")
+        return
 
     file_hash = compute_file_hash(local_file, checksum=checksum)
     want_name = _format_versioned_filename(stem, suffix, datetime.utcnow(), file_hash)
