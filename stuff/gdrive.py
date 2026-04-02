@@ -7,6 +7,7 @@ import mimetypes
 import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib import request as urlrequest, error as urlerror
 from pathlib import Path, PurePosixPath
 from typing import Dict, Tuple, Optional, List
 from tqdm import tqdm
@@ -29,8 +30,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 DEFAULT_TRANSFER_CHUNK_SIZE = max(8, int(os.getenv("GDRIVE_TRANSFER_CHUNK_MB", "64"))) * 1024 * 1024
-DEFAULT_ENABLE_PARALLEL_DOWNLOAD = _env_bool("GDRIVE_ENABLE_PARALLEL_DOWNLOAD", False)
-DEFAULT_PARALLEL_DOWNLOAD_WORKERS = max(1, int(os.getenv("GDRIVE_DOWNLOAD_WORKERS", "1")))
+DEFAULT_ENABLE_PARALLEL_DOWNLOAD = _env_bool("GDRIVE_ENABLE_PARALLEL_DOWNLOAD", True)
+DEFAULT_PARALLEL_DOWNLOAD_WORKERS = max(1, int(os.getenv("GDRIVE_DOWNLOAD_WORKERS", "4")))
 DEFAULT_PARALLEL_MIN_BYTES = max(128, int(os.getenv("GDRIVE_PARALLEL_MIN_MB", "512"))) * 1024 * 1024
 
 
@@ -649,17 +650,39 @@ def _download_file(
         and total_bytes >= DEFAULT_PARALLEL_MIN_BYTES
         and DEFAULT_PARALLEL_DOWNLOAD_WORKERS > 1
     ):
-        _download_file_parallel(
-            drive=drive,
-            file_id=file_id,
-            dest_path=dest_path,
-            total_bytes=total_bytes,
-            rate=rate,
-            chunk_size=chunk_size,
-            workers=DEFAULT_PARALLEL_DOWNLOAD_WORKERS,
-        )
-        return
+        try:
+            _download_file_parallel(
+                drive=drive,
+                file_id=file_id,
+                dest_path=dest_path,
+                total_bytes=total_bytes,
+                rate=rate,
+                chunk_size=chunk_size,
+                workers=DEFAULT_PARALLEL_DOWNLOAD_WORKERS,
+            )
+            return
+        except Exception as e:
+            print(f"Gdrive_sync: parallel download failed ({e}); falling back to single-stream mode.")
 
+    _download_file_single_stream(
+        drive=drive,
+        file_id=file_id,
+        dest_path=dest_path,
+        rate=rate,
+        total_bytes=total_bytes,
+        chunk_size=chunk_size,
+    )
+
+
+def _download_file_single_stream(
+    drive: DriveSync,
+    file_id: str,
+    dest_path: Path,
+    rate: RateTracker,
+    total_bytes: Optional[int],
+    chunk_size: int,
+):
+    from googleapiclient.http import MediaIoBaseDownload
     request = drive.svc.files().get_media(fileId=file_id, supportsAllDrives=True)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     with io.FileIO(str(dest_path), "wb") as fh, tqdm(
@@ -676,6 +699,24 @@ def _download_file(
                 rate.add(delta)
                 bar.update(delta)
 
+
+def _get_drive_access_token(drive: DriveSync) -> str:
+    creds = getattr(getattr(drive.svc, "_http", None), "credentials", None)
+    if creds is None:
+        raise RuntimeError("Could not access Drive OAuth credentials for parallel download")
+    if not getattr(creds, "valid", False):
+        if getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
+            from google.auth.transport.requests import Request
+
+            creds.refresh(Request())
+        else:
+            raise RuntimeError("Drive OAuth credentials are invalid and cannot be refreshed")
+    token = getattr(creds, "token", None)
+    if not token:
+        raise RuntimeError("Missing OAuth bearer token for parallel download")
+    return token
+
+
 def _download_file_parallel(
     drive: DriveSync,
     file_id: str,
@@ -685,8 +726,10 @@ def _download_file_parallel(
     chunk_size: int,
     workers: int,
 ):
-    req = drive.svc.files().get_media(fileId=file_id, supportsAllDrives=True)
-    url = req.uri
+    url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true"
+    token_lock = threading.Lock()
+    token_holder = {"value": _get_drive_access_token(drive)}
+
     ranges = []
     start = 0
     while start < total_bytes:
@@ -694,22 +737,44 @@ def _download_file_parallel(
         ranges.append((start, end))
         start = end + 1
 
-    def fetch_range(start_end: Tuple[int, int]) -> int:
+    def fetch_range(start_end: Tuple[int, int]) -> Tuple[int, bytes]:
         s, e = start_end
-        headers = {"Range": f"bytes={s}-{e}", "Accept-Encoding": "identity"}
-        resp, content = _retry(
-            lambda: drive.svc._http.request(url, method="GET", headers=headers)
-        )
-        status = int(getattr(resp, "status", 0))
-        if status not in (200, 206):
-            raise RuntimeError(f"Range request failed: HTTP {status} for bytes={s}-{e}")
-        expected_len = e - s + 1
-        got_len = len(content)
-        if got_len != expected_len and not (status == 200 and s == 0 and got_len == total_bytes):
-            raise RuntimeError(
-                f"Range length mismatch for bytes={s}-{e}: expected {expected_len}, got {got_len}"
-            )
-        return s, content
+        for attempt in range(6):
+            try:
+                with token_lock:
+                    token = token_holder["value"]
+                req = urlrequest.Request(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Range": f"bytes={s}-{e}",
+                        "Accept-Encoding": "identity",
+                    },
+                    method="GET",
+                )
+                with urlrequest.urlopen(req, timeout=300) as resp:
+                    status = int(resp.getcode() or 0)
+                    content = resp.read()
+                if status not in (200, 206):
+                    raise RuntimeError(f"Range request failed: HTTP {status} for bytes={s}-{e}")
+                expected_len = e - s + 1
+                got_len = len(content)
+                if got_len != expected_len and not (status == 200 and s == 0 and got_len == total_bytes):
+                    raise RuntimeError(
+                        f"Range length mismatch for bytes={s}-{e}: expected {expected_len}, got {got_len}"
+                    )
+                return s, content
+            except urlerror.HTTPError as ex:
+                if ex.code == 401:
+                    with token_lock:
+                        token_holder["value"] = _get_drive_access_token(drive)
+                if ex.code not in (401, 403, 429, 500, 502, 503, 504):
+                    raise
+            except Exception:
+                if attempt == 5:
+                    raise
+            time.sleep(0.8 * (2 ** attempt) + 0.1 * (attempt + 1))
+        raise RuntimeError(f"Range request retries exhausted for bytes={s}-{e}")
 
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(dest_path), os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o644)
