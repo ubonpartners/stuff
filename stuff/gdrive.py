@@ -5,6 +5,8 @@ import time
 import tarfile
 import mimetypes
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Dict, Tuple, Optional, List
 from tqdm import tqdm
@@ -15,6 +17,20 @@ from datetime import datetime
 # CONFIG: your Shared Drive ID
 # ================================
 DRIVE_ID = "0AEhZOUisyqrNUk9PVA"  # <-- your MLData Shared Drive
+
+
+# Transfer tuning knobs (override via env if needed).
+def _env_bool(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+DEFAULT_TRANSFER_CHUNK_SIZE = max(8, int(os.getenv("GDRIVE_TRANSFER_CHUNK_MB", "64"))) * 1024 * 1024
+DEFAULT_ENABLE_PARALLEL_DOWNLOAD = _env_bool("GDRIVE_ENABLE_PARALLEL_DOWNLOAD", False)
+DEFAULT_PARALLEL_DOWNLOAD_WORKERS = max(1, int(os.getenv("GDRIVE_DOWNLOAD_WORKERS", "1")))
+DEFAULT_PARALLEL_MIN_BYTES = max(128, int(os.getenv("GDRIVE_PARALLEL_MIN_MB", "512"))) * 1024 * 1024
 
 
 class RateTracker:
@@ -368,7 +384,7 @@ def _sync_folder_to_drive_as_tar(
     base_name: str,
     checksum: bool,
     keep_local_tar: bool = False,
-    upload_chunk_size: int = 8 * 1024 * 1024,
+    upload_chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
 ):
     from googleapiclient.http import MediaFileUpload
 
@@ -457,7 +473,7 @@ def _sync_drive_tar_to_folder(
     remote_parent_id: str,
     base_name: str,
     checksum: bool,
-    download_chunk_size: int = 8 * 1024 * 1024,
+    download_chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
 ):
     files = drive.list_files_in(remote_parent_id)
     latest = _pick_latest_tar(files, base_name)
@@ -533,7 +549,7 @@ def _sync_file_to_drive_versioned(
     stem: str,
     suffix: str,
     checksum: bool,
-    upload_chunk_size: int = 8 * 1024 * 1024,
+    upload_chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
 ):
     from googleapiclient.http import MediaFileUpload
 
@@ -576,7 +592,7 @@ def _sync_drive_versioned_to_file(
     stem: str,
     suffix: str,
     checksum: bool,
-    download_chunk_size: int = 8 * 1024 * 1024,
+    download_chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
 ):
     files = drive.list_files_in(remote_parent_id)
     latest = _pick_latest_versioned(files, stem, suffix)
@@ -603,10 +619,34 @@ def _sync_drive_versioned_to_file(
 # ================================
 # Transfer helpers
 # ================================
-def _download_file(drive: DriveSync, file_id: str, dest_path: Path, rate: RateTracker, chunk_size: int = 8 * 1024 * 1024):
+def _download_file(
+    drive: DriveSync,
+    file_id: str,
+    dest_path: Path,
+    rate: RateTracker,
+    chunk_size: int = DEFAULT_TRANSFER_CHUNK_SIZE,
+):
     from googleapiclient.http import MediaIoBaseDownload
     meta = drive.svc.files().get(fileId=file_id, fields="size", supportsAllDrives=True).execute()
     total_bytes = int(meta.get("size", 0)) if meta.get("size") is not None else None
+
+    if (
+        DEFAULT_ENABLE_PARALLEL_DOWNLOAD
+        and
+        total_bytes
+        and total_bytes >= DEFAULT_PARALLEL_MIN_BYTES
+        and DEFAULT_PARALLEL_DOWNLOAD_WORKERS > 1
+    ):
+        _download_file_parallel(
+            drive=drive,
+            file_id=file_id,
+            dest_path=dest_path,
+            total_bytes=total_bytes,
+            rate=rate,
+            chunk_size=chunk_size,
+            workers=DEFAULT_PARALLEL_DOWNLOAD_WORKERS,
+        )
+        return
 
     request = drive.svc.files().get_media(fileId=file_id, supportsAllDrives=True)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -623,6 +663,60 @@ def _download_file(drive: DriveSync, file_id: str, dest_path: Path, rate: RateTr
             if delta:
                 rate.add(delta)
                 bar.update(delta)
+
+def _download_file_parallel(
+    drive: DriveSync,
+    file_id: str,
+    dest_path: Path,
+    total_bytes: int,
+    rate: RateTracker,
+    chunk_size: int,
+    workers: int,
+):
+    req = drive.svc.files().get_media(fileId=file_id, supportsAllDrives=True)
+    url = req.uri
+    ranges = []
+    start = 0
+    while start < total_bytes:
+        end = min(total_bytes - 1, start + chunk_size - 1)
+        ranges.append((start, end))
+        start = end + 1
+
+    def fetch_range(start_end: Tuple[int, int]) -> int:
+        s, e = start_end
+        headers = {"Range": f"bytes={s}-{e}", "Accept-Encoding": "identity"}
+        resp, content = _retry(
+            lambda: drive.svc._http.request(url, method="GET", headers=headers)
+        )
+        status = int(getattr(resp, "status", 0))
+        if status not in (200, 206):
+            raise RuntimeError(f"Range request failed: HTTP {status} for bytes={s}-{e}")
+        expected_len = e - s + 1
+        got_len = len(content)
+        if got_len != expected_len and not (status == 200 and s == 0 and got_len == total_bytes):
+            raise RuntimeError(
+                f"Range length mismatch for bytes={s}-{e}: expected {expected_len}, got {got_len}"
+            )
+        return s, content
+
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(dest_path), os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o644)
+    try:
+        os.ftruncate(fd, total_bytes)
+        lock = threading.Lock()
+        with tqdm(total=total_bytes, desc="Downloading", unit="B", unit_scale=True, unit_divisor=1024) as bar:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futures = [ex.submit(fetch_range, r) for r in ranges]
+                for fut in as_completed(futures):
+                    s, content = fut.result()
+                    os.pwrite(fd, content, s)
+                    n = len(content)
+                    with lock:
+                        rate.add(n)
+                        bar.update(n)
+                        bar.set_postfix_str(f"{rate.mbps():.2f} Mbps")
+    finally:
+        os.close(fd)
 
 
 def _retry(fn, retries: int = 6, base_delay: float = 0.8):
