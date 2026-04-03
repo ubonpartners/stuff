@@ -35,6 +35,18 @@ DEFAULT_PARALLEL_DOWNLOAD_WORKERS = max(1, int(os.getenv("GDRIVE_DOWNLOAD_WORKER
 DEFAULT_PARALLEL_MIN_BYTES = max(128, int(os.getenv("GDRIVE_PARALLEL_MIN_MB", "512"))) * 1024 * 1024
 
 
+def _format_download_strategy(total_bytes: Optional[int], chunk_size: int) -> str:
+    chunk_mb = max(1, chunk_size // (1024 * 1024))
+    if (
+        DEFAULT_ENABLE_PARALLEL_DOWNLOAD
+        and total_bytes
+        and total_bytes >= DEFAULT_PARALLEL_MIN_BYTES
+        and DEFAULT_PARALLEL_DOWNLOAD_WORKERS > 1
+    ):
+        return f"parallel workers={DEFAULT_PARALLEL_DOWNLOAD_WORKERS}, chunk={chunk_mb}MB"
+    return f"single-stream, chunk={chunk_mb}MB"
+
+
 class RateTracker:
     """Tracks bytes over a sliding window to compute Mbps (single-threaded)."""
     def __init__(self, window_seconds: int = 30):
@@ -501,7 +513,8 @@ def _sync_drive_tar_to_folder(
             return
 
     tar_local_path = local_base.parent / latest["name"]
-    print(f"Gdrive_sync: Downloading {latest['name']} from Drive ...")
+    strategy = _format_download_strategy(int(latest.get("size", 0) or 0), download_chunk_size)
+    print(f"Gdrive_sync: Downloading {latest['name']} from Drive ({strategy}) ...")
     _download_file(drive, latest["id"], tar_local_path, RateTracker(), chunk_size=download_chunk_size)
 
     print(f"Extracting into {local_base} ...")
@@ -622,7 +635,8 @@ def _sync_drive_versioned_to_file(
     local_file.parent.mkdir(parents=True, exist_ok=True)
 
     tmp_path = local_file.parent / latest["name"]  # download to versioned filename
-    print(f"Downloading {latest['name']} from Drive ...")
+    strategy = _format_download_strategy(int(latest.get("size", 0) or 0), download_chunk_size)
+    print(f"Downloading {latest['name']} from Drive ({strategy}) ...")
     _download_file(drive, latest["id"], tmp_path, RateTracker(), chunk_size=download_chunk_size)
 
     tmp_path.replace(local_file)
