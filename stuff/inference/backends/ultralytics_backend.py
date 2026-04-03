@@ -16,6 +16,13 @@ from ..base import InferenceBackend
 
 
 class UltralyticsBackend(InferenceBackend):
+    @staticmethod
+    def _canonical_attr_name(name):
+        """Normalize attribute naming variants like person:is_male vs person_is_male."""
+        if not isinstance(name, str):
+            return ""
+        return name.strip().replace(":", "_")
+
     def __init__(self, model_name, model_params, config, class_synonyms):
         super().__init__()
         self.model_name = model_name
@@ -62,8 +69,17 @@ class UltralyticsBackend(InferenceBackend):
 
         if model_attr_names is not None and config.attributes is not None:
             attr_index = {name: i for i, name in enumerate(config.attributes)}
+            # Fallback map for schema variants where only delimiters differ (':' vs '_').
+            canonical_attr_index = {
+                self._canonical_attr_name(name): i for i, name in enumerate(config.attributes)
+            }
             # -1 means model has attribute that target schema does not track.
-            self.det_attributes_remap = [attr_index.get(name, -1) for name in model_attr_names]
+            self.det_attributes_remap = []
+            for name in model_attr_names:
+                idx = attr_index.get(name, None)
+                if idx is None:
+                    idx = canonical_attr_index.get(self._canonical_attr_name(name), -1)
+                self.det_attributes_remap.append(idx)
 
     def _on_predict_start(self, predictor: object, persist: bool = False) -> None:
         del persist
