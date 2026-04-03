@@ -429,36 +429,37 @@ def _sync_folder_to_drive_as_tar(
         print(f"Building tar: {tar_path}")
         build_tar_with_progress(local_base, tar_path, records)
 
-    # 5) Upload with byte-accurate progress
-    total_bytes = os.path.getsize(tar_path)
-    rate = RateTracker(window_seconds=30)
-    media = MediaFileUpload(str(tar_path), mimetype=guess_mime(tar_path), resumable=True, chunksize=upload_chunk_size)
-    request = drive.svc.files().create(
-        body={"name": tar_name, "parents": [remote_parent_id]},
-        media_body=media, fields="id", supportsAllDrives=True
-    )
-    response = None
-    last = 0
-    with tqdm(total=total_bytes, desc="Uploading", unit="B", unit_scale=True, unit_divisor=1024) as bar:
-        while response is None:
-            status, response = _retry(lambda: request.next_chunk())
-            if status:
-                sent = int(getattr(status, "resumable_progress", 0)) - last
-                if sent > 0:
-                    rate.add(sent); last += sent
-                    bar.update(sent); bar.set_postfix_str(f"{rate.mbps():.2f} Mbps")
-        if last < total_bytes:
-            bar.update(total_bytes - last)
+    try:
+        # 5) Upload with byte-accurate progress
+        total_bytes = os.path.getsize(tar_path)
+        rate = RateTracker(window_seconds=30)
+        media = MediaFileUpload(str(tar_path), mimetype=guess_mime(tar_path), resumable=True, chunksize=upload_chunk_size)
+        request = drive.svc.files().create(
+            body={"name": tar_name, "parents": [remote_parent_id]},
+            media_body=media, fields="id", supportsAllDrives=True
+        )
+        response = None
+        last = 0
+        with tqdm(total=total_bytes, desc="Uploading", unit="B", unit_scale=True, unit_divisor=1024) as bar:
+            while response is None:
+                status, response = _retry(lambda: request.next_chunk())
+                if status:
+                    sent = int(getattr(status, "resumable_progress", 0)) - last
+                    if sent > 0:
+                        rate.add(sent); last += sent
+                        bar.update(sent); bar.set_postfix_str(f"{rate.mbps():.2f} Mbps")
+            if last < total_bytes:
+                bar.update(total_bytes - last)
 
-    print("Upload complete.")
-
-    # 6) Delete local tar unless user wants to keep it
-    if not keep_local_tar:
-        try:
-            tar_path.unlink()
-            print(f"Deleted local tar {tar_path}")
-        except Exception as e:
-            print(f"Warning: could not delete tar {tar_path}: {e}")
+        print("Upload complete.")
+    finally:
+        # Delete local tar unless user explicitly wants to keep it.
+        if not keep_local_tar:
+            try:
+                tar_path.unlink(missing_ok=True)
+                print(f"Deleted local tar {tar_path}")
+            except Exception as e:
+                print(f"Warning: could not delete tar {tar_path}: {e}")
 
 
 # ================================
@@ -517,17 +518,25 @@ def _sync_drive_tar_to_folder(
     print(f"Gdrive_sync: Downloading {latest['name']} from Drive ({strategy}) ...")
     _download_file(drive, latest["id"], tar_local_path, RateTracker(), chunk_size=download_chunk_size)
 
-    print(f"Extracting into {local_base} ...")
-    local_base.mkdir(parents=True, exist_ok=True)  # ensure it exists before extract
-    with tarfile.open(tar_local_path, "r") as tf:
-        members = tf.getmembers()
-        for m in members:
-            _validate_tar_member(m, latest["name"])
-        with tqdm(total=len(members), desc="Extracting", unit="file") as bar:
+    try:
+        print(f"Extracting into {local_base} ...")
+        local_base.mkdir(parents=True, exist_ok=True)  # ensure it exists before extract
+        with tarfile.open(tar_local_path, "r") as tf:
+            members = tf.getmembers()
             for m in members:
-                tf.extract(m, path=local_base)
-                bar.update(1)
-    print("Extraction complete.")
+                _validate_tar_member(m, latest["name"])
+            with tqdm(total=len(members), desc="Extracting", unit="file") as bar:
+                for m in members:
+                    tf.extract(m, path=local_base)
+                    bar.update(1)
+        print("Extraction complete.")
+    finally:
+        # Always clean up downloaded tar (including failed extract/download paths).
+        try:
+            tar_local_path.unlink(missing_ok=True)
+            print(f"Deleted local tar {tar_local_path}")
+        except Exception as e:
+            print(f"Warning: could not delete tar {tar_local_path}: {e}")
 
 # ================================
 # Single-file: naming & sync
