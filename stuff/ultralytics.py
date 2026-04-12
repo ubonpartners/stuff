@@ -286,7 +286,7 @@ def yolo_results_to_dets(results,
                          face_kp=False,
                          pose_kp=False,
                          facepose_kp=False,
-                         fold_attributes=False,
+                         fold_attributes=True,
                          params=None):
 
     det_boxes = results.boxes.xyxyn.tolist() # center
