@@ -41,6 +41,7 @@ You may choose to use this code under either license. The AGPL-3.0 license appli
 | **[platform_stuff](#stuffplatform_stuff)** | Jetson detection, GPU count, CUDA cache clear, TSS key stats (pthread) |
 | **[reid](#stuffreid)** | Cosine similarity for PyTorch 1D tensors (e.g. ReID embeddings) |
 | **[result_cache](#stuffresult_cache)** | Pickle-backed list of results with add/get/delete by key match |
+| **[ubtrk2](#stuffubtrk2)** | UBTRK2 BMFF-like 4CC tracker-run container reader/writer + payload codecs |
 | **[test_stuff](#stufftest_stuff)** | Ad-hoc tests / scratch (not a formal test suite) |
 | **[ultralytics](#stuffultralytics)** | YOLO result → normalized dets, draw boxes/pose, keypoint/face helpers, class remap |
 | **[ultralytics_ap](#stuffultralytics_ap)** | Average precision (AP) from confidence/TP/class arrays (adapted from Ultralytics) |
@@ -201,6 +202,7 @@ SFace face recognition from JPEG images.
   Decode JPEG, detect face (YuNet), align/crop (SFace), return embedding as list.
 
 ---
+
 
 <a id="stuffgdrive"></a>
 ### stuff.gdrive
@@ -445,6 +447,23 @@ Pickle-backed result caching with key-based matching.
 
 - **ResultCache(resultfile)**
   Pickle-backed list; **add(result)**, **get(match)** (by key equality), **delete(match)**, **save()**.
+
+---
+
+<a id="stuffubtrk2"></a>
+### stuff.ubtrk2
+
+UBTRK2 binary tracker-run container and payload codecs.
+
+- **Container**: BMFF-like length-prefixed 4CC boxes (`ubtf`, `meta`, repeated `fram`)
+- **Metadata**: `meta` payload is UTF-8 YAML bytes
+- **Frame schema**: each `fram` contains typed child boxes (`fhdr`, `trks`, `dets`, `dbug`, `imgp`, `xtra`)
+- **`UBTRK2Writer(path, metadata)`** / **`UBTRK2Reader(path)`**
+  Streaming writer + indexed reader for efficient persistence and replay
+- **`encode_nested_arrays` / `decode_nested_payloads` / `decode_payload`**
+  Payload wrappers for ndarray/bytes fields without sidecar files
+- **`is_ubtrk2_file(path)`**
+  Fast format probe for UBTRK2 file detection
 
 ---
 

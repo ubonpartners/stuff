@@ -149,6 +149,18 @@ from .img_dedup import ImgDedup
 # Result caching
 from .result_cache import ResultCache
 
+# UBTRK2 tracker-run container
+from .ubtrk2 import (
+    CODEC_RAW,
+    UBTRK2Reader,
+    UBTRK2Writer,
+    decode_nested_payloads,
+    decode_payload,
+    encode_nested_arrays,
+    is_ubtrk2_file,
+)
+
+
 __all__ = [
     # Video
     "RandomAccessVideoReader",
@@ -262,4 +274,12 @@ __all__ = [
     "ImgDedup",
     # Result cache
     "ResultCache",
+    # UBTRK2
+    "CODEC_RAW",
+    "UBTRK2Reader",
+    "UBTRK2Writer",
+    "decode_nested_payloads",
+    "decode_payload",
+    "encode_nested_arrays",
+    "is_ubtrk2_file",
 ]
