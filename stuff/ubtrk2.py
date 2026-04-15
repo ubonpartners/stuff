@@ -47,6 +47,20 @@ FOURCC_EXTRA = b"xtra"
 
 CODEC_RAW = "raw"
 
+UBONCSTUFF_TRACK_FORMAT = "uboncstuff-track-v1"
+UBTRK2_VALUE_CONTAINER = "ubtrk2-value-v1"
+
+_C_FHDR_VERSION = 1
+_C_DETS_VERSION_V1 = 1
+_C_DETS_VERSION_V2 = 2
+_C_MVEC_VERSION = 1
+_C_EMBED_VERSION = 1
+
+_C_NUM_FACE_POINTS_MAX = 5
+_C_NUM_POSE_POINTS_MAX = 17
+_C_NUM_ATTR_MAX = 64
+_C_REID_VECTOR_MAX = 80
+
 _TYPE_NONE = 0x00
 _TYPE_FALSE = 0x01
 _TYPE_TRUE = 0x02
@@ -75,6 +89,14 @@ _ANALYSIS_DEBUG_FILTER = {
         "type": None,
         "data": {"flow": None, "motion_array": None},
     }
+}
+
+_RESULT_TYPE_NAMES = {
+    0: "skip_framerate",
+    1: "skip_no_motion",
+    2: "skip_no_img",
+    3: "tracked_roi",
+    4: "tracked_full_refresh",
 }
 
 
@@ -149,6 +171,42 @@ def _unpack_u32(data: bytes, offset: int) -> Tuple[int, int]:
     if offset + 4 > len(data):
         raise UBTRK2Error("Unexpected EOF while reading uint32")
     return struct.unpack(">I", data[offset : offset + 4])[0], offset + 4
+
+
+def _read_u8(data: bytes | memoryview, offset: int) -> Tuple[int, int]:
+    if offset + 1 > len(data):
+        raise UBTRK2Error("Unexpected EOF while reading uint8")
+    return data[offset], offset + 1
+
+
+def _read_u16(data: bytes | memoryview, offset: int) -> Tuple[int, int]:
+    if offset + 2 > len(data):
+        raise UBTRK2Error("Unexpected EOF while reading uint16")
+    return struct.unpack_from(">H", data, offset)[0], offset + 2
+
+
+def _read_u32(data: bytes | memoryview, offset: int) -> Tuple[int, int]:
+    if offset + 4 > len(data):
+        raise UBTRK2Error("Unexpected EOF while reading uint32")
+    return struct.unpack_from(">I", data, offset)[0], offset + 4
+
+
+def _read_u64(data: bytes | memoryview, offset: int) -> Tuple[int, int]:
+    if offset + 8 > len(data):
+        raise UBTRK2Error("Unexpected EOF while reading uint64")
+    return struct.unpack_from(">Q", data, offset)[0], offset + 8
+
+
+def _read_f32(data: bytes | memoryview, offset: int) -> Tuple[float, int]:
+    if offset + 4 > len(data):
+        raise UBTRK2Error("Unexpected EOF while reading float32")
+    return float(struct.unpack_from(">f", data, offset)[0]), offset + 4
+
+
+def _read_f64(data: bytes | memoryview, offset: int) -> Tuple[float, int]:
+    if offset + 8 > len(data):
+        raise UBTRK2Error("Unexpected EOF while reading float64")
+    return float(struct.unpack_from(">d", data, offset)[0]), offset + 8
 
 
 def _encode_value(value: Any) -> bytes:
@@ -504,6 +562,7 @@ class UBTRK2Reader:
                     payload,
                     decode_nested=decode_nested,
                     analysis_mode=analysis_mode,
+                    metadata=self.metadata,
                 )
 
     def read_frame(
@@ -523,6 +582,7 @@ class UBTRK2Reader:
             payload,
             decode_nested=decode_nested,
             analysis_mode=analysis_mode,
+            metadata=self.metadata,
         )
 
 
@@ -596,11 +656,208 @@ def _decode_encoded_value_filtered(payload: bytes | memoryview, value_filter: An
     return value
 
 
-def _decode_frame_box_payload(
+def _to_float_vector(values: List[float], decode_nested: bool) -> Any:
+    if decode_nested and np is not None:
+        return np.asarray(values, dtype=np.float32)
+    return [float(v) for v in values]
+
+
+def _decode_c_embedding_payload(payload: bytes | memoryview, *, decode_nested: bool) -> Any:
+    off = 0
+    version, off = _read_u32(payload, off)
+    if version != _C_EMBED_VERSION:
+        raise UBTRK2Error(f"Unsupported embedding payload version {version}")
+    _time, off = _read_f64(payload, off)
+    _quality, off = _read_f32(payload, off)
+    emb_size, off = _read_u32(payload, off)
+    values: List[float] = []
+    for _ in range(int(emb_size)):
+        v, off = _read_f32(payload, off)
+        values.append(v)
+    if off != len(payload):
+        raise UBTRK2Error("Embedding payload has trailing bytes")
+    return _to_float_vector(values, decode_nested)
+
+
+def _decode_c_detection_list(
+    payload: bytes | memoryview,
+    *,
+    decode_nested: bool,
+    analysis_mode: bool,
+    as_tracks: bool,
+) -> Tuple[Any, Any]:
+    off = 0
+    version, off = _read_u32(payload, off)
+    if version not in (_C_DETS_VERSION_V1, _C_DETS_VERSION_V2):
+        raise UBTRK2Error(f"Unsupported C detection-list version {version}")
+    _list_time, off = _read_f64(payload, off)
+    num_dets, off = _read_u32(payload, off)
+
+    frame_clip_embedding = None
+    if version >= _C_DETS_VERSION_V2:
+        has_frame_clip, off = _read_u8(payload, off)
+        if has_frame_clip:
+            emb_len, off = _read_u32(payload, off)
+            end = off + int(emb_len)
+            if end > len(payload):
+                raise UBTRK2Error("Frame clip embedding exceeds det-list payload bounds")
+            frame_clip_embedding = _decode_c_embedding_payload(payload[off:end], decode_nested=decode_nested)
+            off = end
+
+    out_tracks: Dict[str, Dict[str, Any]] = {}
+    out_dets: List[Dict[str, Any]] = []
+    for _ in range(int(num_dets)):
+        x0, off = _read_f32(payload, off)
+        y0, off = _read_f32(payload, off)
+        x1, off = _read_f32(payload, off)
+        y1, off = _read_f32(payload, off)
+        conf, off = _read_f32(payload, off)
+        last_seen_time, off = _read_f64(payload, off)
+        cl, off = _read_u16(payload, off)
+        idx, off = _read_u16(payload, off)
+        track_id, off = _read_u64(payload, off)
+        overlap_mask, off = _read_u64(payload, off)
+        subx0, off = _read_f32(payload, off)
+        suby0, off = _read_f32(payload, off)
+        subx1, off = _read_f32(payload, off)
+        suby1, off = _read_f32(payload, off)
+        subconf, off = _read_f32(payload, off)
+        fiqa_score, off = _read_f32(payload, off)
+        num_face_points, off = _read_u8(payload, off)
+        num_pose_points, off = _read_u8(payload, off)
+        num_attr, off = _read_u8(payload, off)
+        reid_len, off = _read_u8(payload, off)
+
+        num_face_points = min(int(num_face_points), _C_NUM_FACE_POINTS_MAX)
+        num_pose_points = min(int(num_pose_points), _C_NUM_POSE_POINTS_MAX)
+        num_attr = min(int(num_attr), _C_NUM_ATTR_MAX)
+        reid_len = min(int(reid_len), _C_REID_VECTOR_MAX)
+
+        face_points_full: List[float] = []
+        for _ in range(_C_NUM_FACE_POINTS_MAX):
+            fx, off = _read_f32(payload, off)
+            fy, off = _read_f32(payload, off)
+            fc, off = _read_f32(payload, off)
+            face_points_full.extend([fx, fy, fc])
+
+        pose_points_full: List[float] = []
+        for _ in range(_C_NUM_POSE_POINTS_MAX):
+            px, off = _read_f32(payload, off)
+            py, off = _read_f32(payload, off)
+            pc, off = _read_f32(payload, off)
+            pose_points_full.extend([px, py, pc])
+
+        attrs_full: List[float] = []
+        for _ in range(_C_NUM_ATTR_MAX):
+            av, off = _read_f32(payload, off)
+            attrs_full.append(av)
+
+        reid_full: List[float] = []
+        for _ in range(_C_REID_VECTOR_MAX):
+            rv, off = _read_f32(payload, off)
+            reid_full.append(rv)
+
+        face_embedding = None
+        clip_embedding = None
+        if version >= _C_DETS_VERSION_V2:
+            has_face_emb, off = _read_u8(payload, off)
+            if has_face_emb:
+                emb_len, off = _read_u32(payload, off)
+                end = off + int(emb_len)
+                if end > len(payload):
+                    raise UBTRK2Error("Face embedding exceeds det-list payload bounds")
+                face_embedding = _decode_c_embedding_payload(payload[off:end], decode_nested=decode_nested)
+                off = end
+
+            has_clip_emb, off = _read_u8(payload, off)
+            if has_clip_emb:
+                emb_len, off = _read_u32(payload, off)
+                end = off + int(emb_len)
+                if end > len(payload):
+                    raise UBTRK2Error("Clip embedding exceeds det-list payload bounds")
+                clip_embedding = _decode_c_embedding_payload(payload[off:end], decode_nested=decode_nested)
+                off = end
+
+        det: Dict[str, Any] = {
+            "box": [x0, y0, x1, y1],
+            "class": int(cl),
+            "confidence": conf,
+            "index": int(idx),
+            "last_seen_time": last_seen_time,
+            "overlap_mask": int(overlap_mask),
+        }
+        if track_id != 0:
+            det["track_id"] = int(track_id)
+        if subconf > 0.0:
+            det["subbox"] = [subx0, suby0, subx1, suby1]
+            det["subbox_conf"] = subconf
+        if fiqa_score != 0.0:
+            det["fiqa_score"] = fiqa_score
+        if num_face_points > 0:
+            det["face_points"] = face_points_full[: num_face_points * 3]
+        if num_pose_points > 0:
+            det["pose_points"] = pose_points_full[: num_pose_points * 3]
+        if num_attr > 0:
+            det["attrs"] = attrs_full[:num_attr]
+        if reid_len > 0:
+            det["reid_vector"] = _to_float_vector(reid_full[:reid_len], decode_nested)
+        if face_embedding is not None:
+            det["face_embedding"] = face_embedding
+        if clip_embedding is not None:
+            det["clip_embedding"] = clip_embedding
+
+        if analysis_mode:
+            det = {k: det[k] for k in ("box", "class", "confidence", "reid_vector", "pose_points") if k in det}
+
+        if as_tracks:
+            if track_id == 0:
+                continue
+            out_tracks[str(int(track_id))] = det
+        else:
+            out_dets.append(det)
+
+    if off != len(payload):
+        raise UBTRK2Error("C detection-list payload has trailing bytes")
+    return (out_tracks if as_tracks else out_dets), frame_clip_embedding
+
+
+def _decode_c_motion_flow(payload: bytes | memoryview, *, decode_nested: bool) -> Dict[str, Any]:
+    off = 0
+    version, off = _read_u32(payload, off)
+    if version != _C_MVEC_VERSION:
+        raise UBTRK2Error(f"Unsupported C motion-flow version {version}")
+    grid_w, off = _read_u32(payload, off)
+    grid_h, off = _read_u32(payload, off)
+    n = int(grid_w) * int(grid_h)
+    flow_pairs: List[Tuple[int, int]] = []
+    for _ in range(n):
+        fx_u16, off = _read_u16(payload, off)
+        fy_u16, off = _read_u16(payload, off)
+        fx = struct.unpack(">h", struct.pack(">H", fx_u16))[0]
+        fy = struct.unpack(">h", struct.pack(">H", fy_u16))[0]
+        flow_pairs.append((fx, fy))
+    if off != len(payload):
+        raise UBTRK2Error("C motion-flow payload has trailing bytes")
+
+    if decode_nested and np is not None:
+        flow = np.asarray(flow_pairs, dtype=np.int16).reshape((int(grid_h), int(grid_w), 2))
+    else:
+        flow = [[int(fx), int(fy)] for fx, fy in flow_pairs]
+    return {
+        "type": "motion_field",
+        "data": {
+            "flow": flow,
+            "grid_w": int(grid_w),
+            "grid_h": int(grid_h),
+        },
+    }
+
+
+def _decode_frame_box_payload_value(
     payload: bytes,
     *,
-    decode_nested: bool = True,
-    analysis_mode: bool = False,
+    decode_nested: bool,
+    analysis_mode: bool,
 ) -> Dict[str, Any]:
     frame: Dict[str, Any] = {
         "frame_time": None,
@@ -652,4 +909,118 @@ def _decode_frame_box_payload(
     if extras:
         frame.update(extras)
     return frame
+
+
+def _decode_frame_box_payload_c(
+    payload: bytes,
+    *,
+    decode_nested: bool,
+    analysis_mode: bool,
+) -> Dict[str, Any]:
+    frame: Dict[str, Any] = {
+        "frame_time": None,
+        "result_type": None,
+        "motion_score": None,
+        "motion_roi": None,
+        "inference_roi": None,
+        "objects": None,
+        "image_path": None,
+        "debug": None,
+    }
+    for fourcc, child_payload in _iter_boxes(payload):
+        if fourcc == FOURCC_FRAME_HEADER:
+            off = 0
+            version, off = _read_u32(child_payload, off)
+            if version != _C_FHDR_VERSION:
+                raise UBTRK2Error(f"Unsupported C frame-header version {version}")
+            frame_time, off = _read_f64(child_payload, off)
+            result_type_raw, off = _read_u32(child_payload, off)
+            motion_score, off = _read_f32(child_payload, off)
+            motion_roi: List[float] = []
+            inference_roi: List[float] = []
+            for _ in range(4):
+                v, off = _read_f32(child_payload, off)
+                motion_roi.append(v)
+            for _ in range(4):
+                v, off = _read_f32(child_payload, off)
+                inference_roi.append(v)
+            if off != len(child_payload):
+                raise UBTRK2Error("C frame-header payload has trailing bytes")
+            frame["frame_time"] = frame_time
+            frame["result_type"] = _RESULT_TYPE_NAMES.get(int(result_type_raw), int(result_type_raw))
+            frame["motion_score"] = motion_score
+            frame["motion_roi"] = motion_roi
+            frame["inference_roi"] = inference_roi
+        elif fourcc == FOURCC_TRACKS:
+            objects, frame_clip_embedding = _decode_c_detection_list(
+                child_payload,
+                decode_nested=decode_nested,
+                analysis_mode=analysis_mode,
+                as_tracks=True,
+            )
+            frame["objects"] = objects
+            if frame_clip_embedding is not None:
+                frame["clip_embedding"] = frame_clip_embedding
+        elif fourcc == FOURCC_DETECTIONS:
+            dets, frame_clip_embedding = _decode_c_detection_list(
+                child_payload,
+                decode_nested=decode_nested,
+                analysis_mode=analysis_mode,
+                as_tracks=False,
+            )
+            frame["inference_dets"] = dets
+            if frame.get("clip_embedding") is None and frame_clip_embedding is not None:
+                frame["clip_embedding"] = frame_clip_embedding
+        elif fourcc == FOURCC_DEBUG:
+            decoded = _decode_encoded_value(child_payload)
+            frame["debug"] = decode_nested_payloads(decoded) if decode_nested else decoded
+        elif fourcc == FOURCC_IMAGE_PATH:
+            frame["image_path"] = bytes(child_payload).decode("utf-8")
+        elif fourcc == FOURCC_EXTRA:
+            decoded = _decode_encoded_value(child_payload)
+            if decode_nested:
+                decoded = decode_nested_payloads(decoded)
+            if isinstance(decoded, dict):
+                frame.update(decoded)
+        elif fourcc == b"mvec":
+            if frame["debug"] is None or not isinstance(frame["debug"], dict):
+                frame["debug"] = {}
+            frame["debug"]["motion_field"] = _decode_c_motion_flow(child_payload, decode_nested=decode_nested)
+        elif fourcc == b"fjpg":
+            frame["frame_jpeg"] = bytes(child_payload)
+    return frame
+
+
+def _decode_frame_box_payload(
+    payload: bytes,
+    *,
+    decode_nested: bool = True,
+    analysis_mode: bool = False,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    mode_hint: Optional[str] = None
+    if isinstance(metadata, dict):
+        fmt = metadata.get("format")
+        payload_encoding = metadata.get("payload_encoding")
+        if fmt == UBONCSTUFF_TRACK_FORMAT:
+            mode_hint = "c"
+        elif isinstance(payload_encoding, dict) and payload_encoding.get("container") == UBTRK2_VALUE_CONTAINER:
+            mode_hint = "value"
+
+    if mode_hint == "c":
+        return _decode_frame_box_payload_c(payload, decode_nested=decode_nested, analysis_mode=analysis_mode)
+    if mode_hint == "value":
+        return _decode_frame_box_payload_value(payload, decode_nested=decode_nested, analysis_mode=analysis_mode)
+
+    value_error: Optional[Exception] = None
+    try:
+        return _decode_frame_box_payload_value(payload, decode_nested=decode_nested, analysis_mode=analysis_mode)
+    except Exception as exc:
+        value_error = exc
+    try:
+        return _decode_frame_box_payload_c(payload, decode_nested=decode_nested, analysis_mode=analysis_mode)
+    except Exception as c_exc:
+        raise UBTRK2Error(
+            f"Could not decode frame payload as value-format ({value_error}) or C-format ({c_exc})"
+        ) from c_exc
 
