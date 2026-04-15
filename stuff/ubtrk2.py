@@ -57,6 +57,26 @@ _TYPE_BYTES = 0x06
 _TYPE_LIST = 0x07
 _TYPE_DICT = 0x08
 
+_ANALYSIS_OBJECT_FILTER = {
+    "box": None,
+    "class": None,
+    "confidence": None,
+    "reid_vector": None,
+    "pose_points": None,
+}
+_ANALYSIS_TRACKS_FILTER = {"*": _ANALYSIS_OBJECT_FILTER}
+_ANALYSIS_DETECTIONS_FILTER = _ANALYSIS_OBJECT_FILTER
+_ANALYSIS_DEBUG_FILTER = {
+    "detector_output": {
+        "type": None,
+        "data": {"detections": _ANALYSIS_DETECTIONS_FILTER},
+    },
+    "motion_field": {
+        "type": None,
+        "data": {"flow": None, "motion_array": None},
+    }
+}
+
 
 class UBTRK2Error(RuntimeError):
     """Raised for malformed UBTRK2 content."""
@@ -102,19 +122,20 @@ def _write_box(fp: io.BufferedWriter, fourcc: bytes, payload: bytes) -> None:
     fp.write(payload)
 
 
-def _iter_boxes(payload: bytes) -> Iterator[Tuple[bytes, bytes]]:
+def _iter_boxes(payload: bytes | memoryview) -> Iterator[Tuple[bytes, memoryview]]:
+    view = payload if isinstance(payload, memoryview) else memoryview(payload)
     offset = 0
-    size = len(payload)
+    size = len(view)
     while offset < size:
         if offset + 8 > size:
             raise UBTRK2Error("Truncated child box header")
-        total_size, fourcc = struct.unpack(">I4s", payload[offset : offset + 8])
+        total_size, fourcc = struct.unpack(">I4s", view[offset : offset + 8])
         if total_size < 8:
             raise UBTRK2Error(f"Invalid child box size {total_size} for {fourcc!r}")
         end = offset + total_size
         if end > size:
             raise UBTRK2Error(f"Child box {fourcc!r} exceeds parent bounds")
-        yield fourcc, payload[offset + 8 : end]
+        yield fourcc, view[offset + 8 : end]
         offset = end
 
 
@@ -131,6 +152,8 @@ def _unpack_u32(data: bytes, offset: int) -> Tuple[int, int]:
 
 
 def _encode_value(value: Any) -> bytes:
+    if np is not None and isinstance(value, np.generic):
+        value = value.item()
     if value is None:
         return bytes([_TYPE_NONE])
     if value is False:
@@ -140,6 +163,8 @@ def _encode_value(value: Any) -> bytes:
     if isinstance(value, int) and not isinstance(value, bool):
         return bytes([_TYPE_INT64]) + struct.pack(">q", value)
     if isinstance(value, float):
+        # Stored track/debug runs should remain numerically sane and deterministic.
+        # Non-finite values indicate upstream bugs and are rejected here.
         if not math.isfinite(value):
             raise ValueError("Non-finite float values are not supported")
         return bytes([_TYPE_FLOAT64]) + struct.pack(">d", value)
@@ -163,6 +188,8 @@ def _encode_value(value: Any) -> bytes:
         out.append(_TYPE_DICT)
         out.extend(_pack_u32(len(value)))
         for key, item in value.items():
+            if np is not None and isinstance(key, np.generic):
+                key = key.item()
             if isinstance(key, int) and not isinstance(key, bool):
                 key = str(key)
             if not isinstance(key, str):
@@ -177,7 +204,9 @@ def _encode_value(value: Any) -> bytes:
     raise TypeError(f"Unsupported value type for UBTRK2 codec: {type(value)}")
 
 
-def _decode_value(data: bytes, offset: int = 0) -> Tuple[Any, int]:
+def _decode_value(data: bytes | memoryview, offset: int = 0) -> Tuple[Any, int]:
+    if not isinstance(data, memoryview):
+        data = memoryview(data)
     if offset >= len(data):
         raise UBTRK2Error("Unexpected EOF while decoding value")
     t = data[offset]
@@ -201,10 +230,10 @@ def _decode_value(data: bytes, offset: int = 0) -> Tuple[Any, int]:
         end = offset + length
         if end > len(data):
             raise UBTRK2Error("Truncated bytes/string")
-        raw = data[offset:end]
+        raw_view = data[offset:end]
         if t == _TYPE_STR:
-            return raw.decode("utf-8"), end
-        return raw, end
+            return bytes(raw_view).decode("utf-8"), end
+        return raw_view, end
     if t == _TYPE_LIST:
         count, offset = _unpack_u32(data, offset)
         out: List[Any] = []
@@ -213,11 +242,11 @@ def _decode_value(data: bytes, offset: int = 0) -> Tuple[Any, int]:
             end = offset + elem_len
             if end > len(data):
                 raise UBTRK2Error("Truncated list element")
-            item, consumed = _decode_value(data[offset:end], 0)
-            if consumed != elem_len:
+            item, consumed = _decode_value(data, offset)
+            if consumed != end:
                 raise UBTRK2Error("List element did not decode fully")
             out.append(item)
-            offset = end
+            offset = consumed
         return out, offset
     if t == _TYPE_DICT:
         count, offset = _unpack_u32(data, offset)
@@ -227,18 +256,91 @@ def _decode_value(data: bytes, offset: int = 0) -> Tuple[Any, int]:
             key_end = offset + key_len
             if key_end > len(data):
                 raise UBTRK2Error("Truncated dict key")
-            key = data[offset:key_end].decode("utf-8")
+            key = bytes(data[offset:key_end]).decode("utf-8")
             offset = key_end
             val_len, offset = _unpack_u32(data, offset)
             val_end = offset + val_len
             if val_end > len(data):
                 raise UBTRK2Error("Truncated dict value")
-            item, consumed = _decode_value(data[offset:val_end], 0)
-            if consumed != val_len:
+            item, consumed = _decode_value(data, offset)
+            if consumed != val_end:
                 raise UBTRK2Error("Dict value did not decode fully")
             out[key] = item
-            offset = val_end
+            offset = consumed
         return out, offset
+    raise UBTRK2Error(f"Unknown value type tag 0x{t:02x}")
+
+
+def _decode_value_filtered(
+    data: bytes | memoryview,
+    offset: int = 0,
+    value_filter: Any = None,
+) -> Tuple[Any, int]:
+    if value_filter is None:
+        return _decode_value(data, offset)
+    if not isinstance(data, memoryview):
+        data = memoryview(data)
+    if offset >= len(data):
+        raise UBTRK2Error("Unexpected EOF while decoding value")
+    t = data[offset]
+    offset += 1
+
+    if t in (_TYPE_NONE, _TYPE_FALSE, _TYPE_TRUE, _TYPE_INT64, _TYPE_FLOAT64, _TYPE_STR, _TYPE_BYTES):
+        return _decode_value(data, offset - 1)
+
+    if t == _TYPE_LIST:
+        count, offset = _unpack_u32(data, offset)
+        out: List[Any] = []
+        for _ in range(count):
+            elem_len, offset = _unpack_u32(data, offset)
+            end = offset + elem_len
+            if end > len(data):
+                raise UBTRK2Error("Truncated list element")
+            item, consumed = _decode_value_filtered(data, offset, value_filter)
+            if consumed != end:
+                raise UBTRK2Error("List element did not decode fully")
+            out.append(item)
+            offset = consumed
+        return out, offset
+
+    if t == _TYPE_DICT:
+        count, offset = _unpack_u32(data, offset)
+        out: Dict[str, Any] = {}
+        for _ in range(count):
+            key_len, offset = _unpack_u32(data, offset)
+            key_end = offset + key_len
+            if key_end > len(data):
+                raise UBTRK2Error("Truncated dict key")
+            key = bytes(data[offset:key_end]).decode("utf-8")
+            offset = key_end
+
+            val_len, offset = _unpack_u32(data, offset)
+            val_end = offset + val_len
+            if val_end > len(data):
+                raise UBTRK2Error("Truncated dict value")
+
+            sub_filter = None
+            decode_this = True
+            if isinstance(value_filter, set):
+                decode_this = key in value_filter
+            elif isinstance(value_filter, dict):
+                if key in value_filter:
+                    sub_filter = value_filter[key]
+                elif "*" in value_filter:
+                    sub_filter = value_filter["*"]
+                else:
+                    decode_this = False
+
+            if decode_this:
+                item, consumed = _decode_value_filtered(data, offset, sub_filter)
+                if consumed != val_end:
+                    raise UBTRK2Error("Dict value did not decode fully")
+                out[key] = item
+                offset = consumed
+            else:
+                offset = val_end
+        return out, offset
+
     raise UBTRK2Error(f"Unknown value type tag 0x{t:02x}")
 
 
@@ -283,7 +385,7 @@ def decode_payload(payload: Any) -> Any:
         raise UBTRK2Error(f"Unsupported ndarray codec {codec!r}")
     if not isinstance(data, (bytes, bytearray, memoryview)):
         raise UBTRK2Error("ndarray payload has non-bytes data")
-    arr = np.frombuffer(bytes(data), dtype=np.dtype(dtype))
+    arr = np.frombuffer(data, dtype=np.dtype(dtype))
     return arr.reshape(tuple(int(x) for x in shape))
 
 
@@ -388,21 +490,40 @@ class UBTRK2Reader:
     def num_frames(self) -> int:
         return len(self._frame_offsets)
 
-    def iter_frames(self) -> Iterator[Dict[str, Any]]:
+    def iter_frames(
+        self,
+        *,
+        decode_nested: bool = True,
+        analysis_mode: bool = False,
+    ) -> Iterator[Dict[str, Any]]:
         with open(self.path, "rb") as fp:
             for offset, payload_size in self._frame_offsets:
                 fp.seek(offset)
                 payload = _read_exact(fp, payload_size)
-                yield _decode_frame_box_payload(payload)
+                yield _decode_frame_box_payload(
+                    payload,
+                    decode_nested=decode_nested,
+                    analysis_mode=analysis_mode,
+                )
 
-    def read_frame(self, index: int) -> Dict[str, Any]:
+    def read_frame(
+        self,
+        index: int,
+        *,
+        decode_nested: bool = True,
+        analysis_mode: bool = False,
+    ) -> Dict[str, Any]:
         if index < 0 or index >= len(self._frame_offsets):
             raise IndexError(f"Frame index out of range: {index}")
         offset, payload_size = self._frame_offsets[index]
         with open(self.path, "rb") as fp:
             fp.seek(offset)
             payload = _read_exact(fp, payload_size)
-        return _decode_frame_box_payload(payload)
+        return _decode_frame_box_payload(
+            payload,
+            decode_nested=decode_nested,
+            analysis_mode=analysis_mode,
+        )
 
 
 def _encode_frame_header(frame: Dict[str, Any]) -> bytes:
@@ -461,14 +582,26 @@ def _encode_frame_box_payload(frame: Dict[str, Any]) -> bytes:
     return b"".join(parts)
 
 
-def _decode_encoded_value(payload: bytes) -> Any:
+def _decode_encoded_value(payload: bytes | memoryview) -> Any:
     value, used = _decode_value(payload, 0)
     if used != len(payload):
         raise UBTRK2Error("Encoded value payload has trailing bytes")
     return value
 
 
-def _decode_frame_box_payload(payload: bytes) -> Dict[str, Any]:
+def _decode_encoded_value_filtered(payload: bytes | memoryview, value_filter: Any) -> Any:
+    value, used = _decode_value_filtered(payload, 0, value_filter)
+    if used != len(payload):
+        raise UBTRK2Error("Encoded value payload has trailing bytes")
+    return value
+
+
+def _decode_frame_box_payload(
+    payload: bytes,
+    *,
+    decode_nested: bool = True,
+    analysis_mode: bool = False,
+) -> Dict[str, Any]:
     frame: Dict[str, Any] = {
         "frame_time": None,
         "result_type": None,
@@ -491,17 +624,29 @@ def _decode_frame_box_payload(payload: bytes) -> Dict[str, Any]:
             frame["motion_roi"] = fhdr.get("motion_roi")
             frame["inference_roi"] = fhdr.get("inference_roi")
         elif fourcc == FOURCC_TRACKS:
-            frame["objects"] = decode_nested_payloads(_decode_encoded_value(child_payload))
+            if analysis_mode:
+                decoded = _decode_encoded_value_filtered(child_payload, _ANALYSIS_TRACKS_FILTER)
+            else:
+                decoded = _decode_encoded_value(child_payload)
+            frame["objects"] = decode_nested_payloads(decoded) if decode_nested else decoded
         elif fourcc == FOURCC_DETECTIONS:
-            frame["inference_dets"] = decode_nested_payloads(
-                _decode_encoded_value(child_payload)
-            )
+            if analysis_mode:
+                decoded = _decode_encoded_value_filtered(child_payload, _ANALYSIS_DETECTIONS_FILTER)
+            else:
+                decoded = _decode_encoded_value(child_payload)
+            frame["inference_dets"] = decode_nested_payloads(decoded) if decode_nested else decoded
         elif fourcc == FOURCC_DEBUG:
-            frame["debug"] = decode_nested_payloads(_decode_encoded_value(child_payload))
+            if analysis_mode:
+                decoded = _decode_encoded_value_filtered(child_payload, _ANALYSIS_DEBUG_FILTER)
+            else:
+                decoded = _decode_encoded_value(child_payload)
+            frame["debug"] = decode_nested_payloads(decoded) if decode_nested else decoded
         elif fourcc == FOURCC_IMAGE_PATH:
-            frame["image_path"] = child_payload.decode("utf-8")
+            frame["image_path"] = bytes(child_payload).decode("utf-8")
         elif fourcc == FOURCC_EXTRA:
-            decoded = decode_nested_payloads(_decode_encoded_value(child_payload))
+            decoded = _decode_encoded_value(child_payload)
+            if decode_nested:
+                decoded = decode_nested_payloads(decoded)
             if isinstance(decoded, dict):
                 extras.update(decoded)
     if extras:
