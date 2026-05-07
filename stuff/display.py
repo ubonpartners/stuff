@@ -132,7 +132,7 @@ class Display:
         c=coord.unmap_roi_point(self.img_roi, centre)
         self.overlay.circle(c, radius, clr=clr, line_width=thickness)
 
-    def draw_jpeg(self, jpeg, box=[0.8,0.77, 0.95, 0.98]):
+    def draw_jpeg(self, jpeg, box=[0.8,0.77, 0.95, 0.98], select_context=None):
         if isinstance(jpeg, dict) and "data" in jpeg:
             jpeg_bytes=jpeg["data"]
         else:
@@ -141,6 +141,8 @@ class Display:
         # Decode the JPEG image
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         self.overlay.img(img, box)
+        if select_context:
+            self.selected_boxes_list.append({"box":box, "context":select_context})
 
     def draw_text(self, text, xc, yc,
               font=cv2.FONT_HERSHEY_SIMPLEX,
