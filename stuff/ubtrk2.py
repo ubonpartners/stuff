@@ -88,7 +88,18 @@ _ANALYSIS_DEBUG_FILTER = {
     "motion_field": {
         "type": None,
         "data": {"flow": None, "motion_array": None},
-    }
+    },
+    # Phase 1 NN training pipeline (utrack pair-feature trace). Whitelisted
+    # so analysis_mode=True still surfaces the raw bytes for the
+    # pair_logger module to decode via PAIR_LOG_DTYPE.
+    "match_cost_trace": {
+        "type": None,
+        "version": None,
+        "magic": None,
+        "n_records": None,
+        "record_size": None,
+        "data": None,
+    },
 }
 
 _RESULT_TYPE_NAMES = {
