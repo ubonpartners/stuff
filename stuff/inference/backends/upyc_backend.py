@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import cv2
@@ -106,7 +107,8 @@ class UPYCTrackBackend(InferenceBackend):
             raise AssertionError("upyc_track models require ubon_pycstuff") from exc
 
         self.upyc = upyc
-        param_file = "/mldata/config/track/trackers/uc_reid.yaml"
+        # Prefer a tracker config that uses metadata-wrapped .engine detection models.
+        param_file = "/mldata/config/track/trackers/uc_v11_fiqa.yaml"
         if len(model_name_list) > 1:
             param_file = model_name_list[1]
 
