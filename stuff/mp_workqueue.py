@@ -2,6 +2,7 @@ import sys
 import io
 import os
 import multiprocessing as mp
+import queue as _queue_mod
 import time
 from multiprocessing import Process, Queue
 from tqdm.auto import tqdm
@@ -325,9 +326,29 @@ def mp_workqueue_run_mp(work_to_run, worker_fn,
         pbar_total=1000
         pbar_update=0
         while num_results_got<len(work_to_run):
-            # handle messages from worker processes
-            # this is a blocking call, so it will wait for a message
-            msg=result_queue.get(timeout=300)
+            # handle messages from worker processes. Short timeout +
+            # explicit worker liveness probe so that a worker killed by
+            # the OOM-killer (exitcode == -9) or that segfaults fails
+            # the parent quickly with a clear message instead of
+            # hanging on a 300s queue read and then crashing opaquely.
+            try:
+                msg = result_queue.get(timeout=5)
+            except _queue_mod.Empty:
+                dead = [(i, p.exitcode) for i, p in enumerate(workers)
+                        if not p.is_alive() and p.exitcode not in (None, 0)]
+                if dead:
+                    info = ", ".join(f"worker {i} exitcode={ec} "
+                                     f"({'OOM-killed' if ec == -9 else 'crashed'})"
+                                     for i, ec in dead)
+                    raise RuntimeError(
+                        f"mp_workqueue: {len(dead)} worker(s) died before "
+                        f"completing all work — {info}. "
+                        f"Pending: {len(work_to_run) - num_results_got} of "
+                        f"{len(work_to_run)}. Reduce num_workers or free GPU "
+                        f"memory and retry."
+                    )
+                # All workers alive — they're just slow. Keep polling.
+                continue
 
             if msg[0] == "print":
                 _, worker_id, log_message = msg
