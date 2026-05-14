@@ -172,18 +172,19 @@ def _probe_video_flags(src):
     try:
         out = subprocess.check_output([
             'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-            '-show_entries', 'stream=codec_name,has_b_frames,field_order',
+            '-show_entries', 'stream=codec_name,has_b_frames,field_order,r_frame_rate',
             '-of', 'default=noprint_wrappers=1:nokey=0', src,
         ], text=True)
     except subprocess.CalledProcessError:
         # Probe failed — assume we need a transcode (libx264 will surface
         # the real error if the source is truly unreadable).
         return {'_probe_failed': True, 'needs_transcode': True,
-                'reasons': ['ffprobe_failed']}
+                'reasons': ['ffprobe_failed'], 'r_frame_rate': ''}
     info = dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
     codec = info.get('codec_name', '')
     has_b = int(info.get('has_b_frames', '0') or 0)
     field = info.get('field_order', 'progressive')
+    r_frame_rate = info.get('r_frame_rate', '')
     reasons = []
     if has_b > 0:
         # The SPS declared a reorder buffer, so the stream may contain
@@ -199,6 +200,7 @@ def _probe_video_flags(src):
         'codec_name': codec,
         'has_b_frames': has_b,
         'field_order': field,
+        'r_frame_rate': r_frame_rate,
         'reasons': reasons,
         'needs_transcode': bool(reasons),
     }
@@ -232,9 +234,25 @@ def mp4_to_h264(src, dest, debug=False):
         # quality/speed sweet spot for libx264; `-crf 18` is widely
         # considered visually lossless and adds little over the source's
         # existing quantisation noise.
+        #
+        # Frame-rate handling — CRITICAL (2026-05-14): without explicit
+        # `-r {src_fps}` ffmpeg can lose frames on sources whose mp4
+        # packet PTS is non-monotonic due to B-frame reorder. The PP22
+        # corpus contains 24/25/60fps clips, all heavily B-frame-coded;
+        # 8/172 transcoded clips ended up with 30-70% of frames dropped
+        # in the first iteration of this transcode. Pinning to the
+        # source `r_frame_rate` preserves the frame count (the SPS-
+        # declared rate on the raw h264 is still 2× — but that's
+        # cosmetic; the C tracker takes fps from annotation metadata).
+        fps = flags.get('r_frame_rate') or '30000/1001'
+        # `-preset medium` (libx264 default) at crf=18 is visually lossless
+        # and finishes a 4K/2.5-min source in ~60s; `slow` quadruples
+        # that and hit the 240s misc.run_cmd default timeout on 4K
+        # PP22 clips. Bump the timeout to 1800s as a belt-and-braces.
         misc.run_cmd(
-            f"ffmpeg -i {src} -c:v libx264 -bf 0 -preset slow -crf 18 "
-            f"-pix_fmt yuv420p -an -f h264 {tmp_path}", debug=debug)
+            f"ffmpeg -i {src} -c:v libx264 -bf 0 -preset medium -crf 18 "
+            f"-r {fps} -pix_fmt yuv420p "
+            f"-an -f h264 {tmp_path}", debug=debug, timeout=1800)
     else:
         misc.run_cmd(
             f"ffmpeg -i {src} -c:v copy -bsf:v h264_mp4toannexb "
