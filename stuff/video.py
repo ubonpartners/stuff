@@ -165,12 +165,80 @@ class RandomAccessVideoReader:
             return frame, frame_time
         return None, None
 
+def _probe_video_flags(src):
+    """Probe a video file for properties that make `-c:v copy` extraction
+    unsafe for our offline CUDA decoder. Returns a dict; the key
+    `needs_transcode` summarises whether a re-encode is required."""
+    try:
+        out = subprocess.check_output([
+            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+            '-show_entries', 'stream=codec_name,has_b_frames,field_order',
+            '-of', 'default=noprint_wrappers=1:nokey=0', src,
+        ], text=True)
+    except subprocess.CalledProcessError:
+        # Probe failed — assume we need a transcode (libx264 will surface
+        # the real error if the source is truly unreadable).
+        return {'_probe_failed': True, 'needs_transcode': True,
+                'reasons': ['ffprobe_failed']}
+    info = dict(line.split('=', 1) for line in out.splitlines() if '=' in line)
+    codec = info.get('codec_name', '')
+    has_b = int(info.get('has_b_frames', '0') or 0)
+    field = info.get('field_order', 'progressive')
+    reasons = []
+    if has_b > 0:
+        # The SPS declared a reorder buffer, so the stream may contain
+        # B-frames. Our CUDA decoder emits frames in decode order with
+        # display PTS → non-monotonic PTS downstream. JAAD video_0021
+        # (1 I + 123 P + 56 B) was the original trigger for this check.
+        reasons.append(f'has_b_frames={has_b}')
+    if field not in ('', 'progressive', 'unknown', 'N/A'):
+        reasons.append(f'field_order={field}')
+    if codec != 'h264':
+        reasons.append(f'codec={codec}')
+    return {
+        'codec_name': codec,
+        'has_b_frames': has_b,
+        'field_order': field,
+        'reasons': reasons,
+        'needs_transcode': bool(reasons),
+    }
+
+
 def mp4_to_h264(src, dest, debug=False):
+    """Demux or transcode `src` into an H.264 elementary stream at `dest`.
+
+    Fast path (`-c:v copy`): when the source is already a B-frame-free,
+    progressive H.264 stream — lossless and near-instant.
+
+    Slow path (`-c:v libx264 -bf 0`): when the source has B-frames,
+    is interlaced, or is not H.264. Our offline CUDA decoder emits
+    frames in decode order tagged with their display PTS, so any
+    B-frames in the source cause non-monotonic PTS downstream and
+    trip `trackset.add_frame`'s monotonic-time assertion. Stripping
+    B-frames at extraction time fixes that without touching the
+    decoder.
+    """
     fd, tmp_path = tempfile.mkstemp(suffix=".h264")
-    os.close(fd)  # Close the open file descriptor so ffmpeg can overwrite it
+    os.close(fd)
     misc.rm(tmp_path)
 
-    misc.run_cmd(f"ffmpeg -i {src} -c:v copy -bsf:v h264_mp4toannexb -an -f h264 {tmp_path}", debug=debug)
+    flags = _probe_video_flags(src)
+    if flags.get('needs_transcode'):
+        if debug:
+            print(f"mp4_to_h264: transcoding {src} "
+                  f"({', '.join(flags.get('reasons', []))})")
+        # Preset/CRF: this transcode runs once per source and is cached
+        # forever, so we favour quality over speed. `-preset slow` is the
+        # quality/speed sweet spot for libx264; `-crf 18` is widely
+        # considered visually lossless and adds little over the source's
+        # existing quantisation noise.
+        misc.run_cmd(
+            f"ffmpeg -i {src} -c:v libx264 -bf 0 -preset slow -crf 18 "
+            f"-pix_fmt yuv420p -an -f h264 {tmp_path}", debug=debug)
+    else:
+        misc.run_cmd(
+            f"ffmpeg -i {src} -c:v copy -bsf:v h264_mp4toannexb "
+            f"-an -f h264 {tmp_path}", debug=debug)
     shutil.move(tmp_path, dest)
 
 def mp4_to_h26x(input_path, max_width, max_height, target_fps, codec='h264', output_folder=None):
