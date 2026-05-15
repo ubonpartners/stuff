@@ -93,7 +93,7 @@ from .image import (
 )
 
 # Multiprocessing work queue
-from .mp_workqueue import mp_workqueue_run, test_work
+from .mp_workqueue import mp_workqueue_run, test_work, resolve_num_workers, gpu_visible_list
 
 # Re-identification
 from .reid import cosine_similarity
@@ -230,6 +230,8 @@ __all__ = [
     # Multiprocessing
     "mp_workqueue_run",
     "test_work",
+    "resolve_num_workers",
+    "gpu_visible_list",
     # ReID
     "cosine_similarity",
     # Augmentation

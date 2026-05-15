@@ -1,11 +1,71 @@
 import sys
 import io
+import os
 import multiprocessing as mp
 import time
 from multiprocessing import Process, Queue
 from tqdm.auto import tqdm
 import traceback
 import logging
+
+
+# --------------------------------------------------------------------------
+# Multi-GPU worker sharding
+# --------------------------------------------------------------------------
+# The pattern used by `mp_workqueue_run_mp` to assign workers to GPUs:
+#
+#   1. Before spawning each worker process, the parent mutates its own
+#      `os.environ["CUDA_VISIBLE_DEVICES"]` to expose a *single* physical GPU.
+#   2. `mp.Process` with `start_method='spawn'` snapshots the parent env at
+#      `start()` time and propagates it to the child. The child Python
+#      interpreter therefore starts up already seeing only one GPU.
+#   3. The parent then restores its original `CUDA_VISIBLE_DEVICES` (or unsets
+#      it) so subsequent spawns get a different GPU and the parent itself is
+#      not left in a narrowed state.
+#
+# This pattern is *bulletproof* w.r.t. CUDA initialization order in the child:
+# no matter what the child's worker function (or its transitively-imported C
+# extensions) does at import time, only one GPU is visible. There is no need
+# for the child to call `cuda.set_device` or to delay imports.
+#
+# Public helpers exported here:
+#   resolve_num_workers(value)  – map "auto"/int to an int
+#   gpu_visible_list()          – list of physical GPUs visible to this process
+#
+# Callers normally do not need to call these directly; pass
+# `num_workers="auto"` and/or `auto_gpu_shard=True` to `mp_workqueue_run`.
+
+
+def gpu_visible_list():
+    """Return the list of physical GPU ids visible to this process.
+
+    Honors `CUDA_VISIBLE_DEVICES` if set (including the empty string, which
+    means "no GPUs"). Falls back to `torch.cuda.device_count()` when the env
+    var is unset. Safe to call before any CUDA context is created — neither
+    branch initializes a CUDA context.
+    """
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is not None:
+        if raw.strip() == "":
+            return []
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    try:
+        import torch
+        return [str(i) for i in range(torch.cuda.device_count())]
+    except Exception:
+        return []
+
+
+def resolve_num_workers(value, gpus_per_worker_when_multi=2,
+                        default_when_single_or_none=4):
+    """Map a config value (int or the string "auto") to an int worker count.
+
+    "auto" → `default_when_single_or_none` when ≤1 GPU is visible, else
+    `gpus_per_worker_when_multi * N` for N>1 visible GPUs."""
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        n = len(gpu_visible_list())
+        return gpus_per_worker_when_multi * n if n > 1 else default_when_single_or_none
+    return int(value)
 
 class StdoutProxy(io.TextIOBase):
     """
@@ -153,7 +213,8 @@ def mp_workqueue_run_mp(work_to_run, worker_fn,
                      process_setup_fn=None,
                      process_setup_args=None,
                      show_pbars=True,
-                     use_thread_for_one_process=False):
+                     use_thread_for_one_process=False,
+                     auto_gpu_shard=True):
     """
     Launches multiple worker processes to execute work items concurrently.
     - Sets up communication queues
@@ -161,8 +222,23 @@ def mp_workqueue_run_mp(work_to_run, worker_fn,
     - Displays progress bars per worker
     - Handles output and exceptions
 
+    Multi-GPU behaviour
+    -------------------
+    When `auto_gpu_shard=True` (default), `num_workers > 1`, and at least two
+    GPUs are visible to this process, workers are pinned round-robin across
+    the visible GPUs by setting `CUDA_VISIBLE_DEVICES` in the parent env
+    immediately before each `Process.start()`. With `start_method='spawn'`
+    this means the child process is launched with a single GPU visible from
+    the very first import — no CUDA init ordering tricks required from the
+    worker function. The parent's `CUDA_VISIBLE_DEVICES` is restored after
+    all workers have started.
+
+    Pass `num_workers="auto"` (resolved via `resolve_num_workers`) to pick a
+    sensible default: 4 workers on ≤1 GPU, 2×N workers on N>1 GPUs.
+
     - set num_workers=0 to run synchronously in the main thread
     """
+    num_workers = resolve_num_workers(num_workers)
 
     if len(work_to_run)==0:
         return []
@@ -206,20 +282,42 @@ def mp_workqueue_run_mp(work_to_run, worker_fn,
             mp.set_start_method('spawn', force=True)
             ProcessOrThread = mp.Process
 
-        for i in range(num_workers):
-            c=30+(200*i)//num_workers
-            if show_pbars:
-                pbars.append(tqdm(total=100,
-                    desc=f"{i:02d}: {'Starting....':31s}",
-                    colour=f"#e0{c:02x}00",
-                    position=i+1,
-                    leave=True, dynamic_ncols=True))
+        shard_gpus = []
+        if auto_gpu_shard and num_workers > 1 and ProcessOrThread is mp.Process:
+            shard_gpus = gpu_visible_list()
+            if len(shard_gpus) < 2:
+                shard_gpus = []  # nothing to shard across
+        saved_cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        try:
+            for i in range(num_workers):
+                c=30+(200*i)//num_workers
+                if show_pbars:
+                    pbars.append(tqdm(total=100,
+                        desc=f"{i:02d}: {'Starting....':31s}",
+                        colour=f"#e0{c:02x}00",
+                        position=i+1,
+                        leave=True, dynamic_ncols=True))
 
-            p = ProcessOrThread(target=mpwq_worker_fn,
-                        args=(work_queue, result_queue, quit_queue, i, worker_fn,
-                              min_update_interval, process_setup_fn, process_setup_args))
-            p.start()
-            workers.append(p)
+                if shard_gpus:
+                    # Set CVD in parent env so the spawned child inherits it
+                    # at process-start time — bulletproof against any
+                    # CUDA-touching code in the child's import chain.
+                    os.environ["CUDA_VISIBLE_DEVICES"] = shard_gpus[i % len(shard_gpus)]
+
+                p = ProcessOrThread(target=mpwq_worker_fn,
+                            args=(work_queue, result_queue, quit_queue, i, worker_fn,
+                                  min_update_interval, process_setup_fn, process_setup_args))
+                p.start()
+                workers.append(p)
+        finally:
+            # Restore parent CVD so the parent process is not left in a
+            # narrowed state after spawning.
+            if saved_cvd is None:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            else:
+                os.environ["CUDA_VISIBLE_DEVICES"] = saved_cvd
+            if shard_gpus:
+                log.info(f"sharded {num_workers} workers across GPUs {shard_gpus}")
 
         num_results_got=0
         last_pbar_refresh_time=time.time()
@@ -292,8 +390,13 @@ def mp_workqueue_run_mp(work_to_run, worker_fn,
     return output_results
 
 def mp_workqueue_run(*args, **kwargs):
-    nw=kwargs.get("num_workers", 1)
-    if nw==0:
+    nw = kwargs.get("num_workers", 1)
+    # Resolve "auto" here too so the no-thread dispatch decision sees an int.
+    nw = resolve_num_workers(nw)
+    kwargs["num_workers"] = nw
+    if nw == 0:
+        # Strip mp-only kwargs that the synchronous path doesn't take.
+        kwargs.pop("auto_gpu_shard", None)
         return mp_workqueue_run_no_thread(*args, **kwargs)
     return mp_workqueue_run_mp(*args, **kwargs)
 
