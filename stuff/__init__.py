@@ -160,6 +160,17 @@ from .ubtrk2 import (
     is_ubtrk2_file,
 )
 
+# Isolated workspaces + async command execution
+from .workspace import (
+    Exec,
+    ExecResult,
+    Output,
+    Policy,
+    Workspace,
+    WorkspaceManager,
+    attach,
+)
+
 
 __all__ = [
     # Video
@@ -284,4 +295,12 @@ __all__ = [
     "decode_payload",
     "encode_nested_arrays",
     "is_ubtrk2_file",
+    # Isolated workspaces
+    "WorkspaceManager",
+    "Workspace",
+    "Policy",
+    "Exec",
+    "ExecResult",
+    "Output",
+    "attach",
 ]
