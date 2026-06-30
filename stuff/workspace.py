@@ -416,11 +416,15 @@ class Exec:
 
     def __init__(self, ws: "Workspace", cmd: Command, *, tty: bool = False,
                  env: Optional[dict] = None, timeout: Optional[float] = None,
-                 stdin: Optional[bytes] = None, seq: int = 0):
+                 stdin: Optional[bytes] = None, seq: int = 0,
+                 on_output: Optional[Callable[[bytes], None]] = None):
         self.ws = ws
         self.tier = ws.tier
         self.seq = seq
         self.tty = tty
+        # live output hook (called with each chunk as it's read) — e.g. to stream a PTY to a
+        # websocket terminal. Output is still buffered/spilled for the ExecResult as well.
+        self._on_output = on_output
         self.timed_out = False
         self.killed = False
         self._done = threading.Event()
@@ -520,6 +524,11 @@ class Exec:
             if not data:
                 break
             cap.feed(data)
+            if self._on_output is not None:
+                try:
+                    self._on_output(data)
+                except Exception:
+                    pass
 
     # -- completion -----------------------------------------------------------
     def _reap(self):
@@ -689,19 +698,21 @@ class Workspace:
 
     # -- exec -----------------------------------------------------------------
     def exec(self, cmd: Command, *, tty: bool = False, env: Optional[dict] = None,
-             timeout: Optional[float] = None, stdin: Optional[bytes] = None) -> Exec:
+             timeout: Optional[float] = None, stdin: Optional[bytes] = None,
+             on_output: Optional[Callable[[bytes], None]] = None) -> Exec:
         """Run a command asynchronously in this workspace. Returns an :class:`Exec` handle at once.
 
         ``cmd`` may be a string (run via ``/bin/sh -c`` so pipes/redirects work) or an argv list
         (run directly; required when an allowlist is set). ``tty=True`` allocates a pseudo-terminal
-        for interactive programs.
+        for interactive programs. ``on_output`` (if given) is called with each output chunk as it's
+        read — e.g. to stream a PTY to a websocket terminal.
         """
         if self._destroyed:
             raise RuntimeError("workspace destroyed")
         with self._lock:
             seq = self._seq
             self._seq += 1
-        h = Exec(self, cmd, tty=tty, env=env, timeout=timeout, stdin=stdin, seq=seq)
+        h = Exec(self, cmd, tty=tty, env=env, timeout=timeout, stdin=stdin, seq=seq, on_output=on_output)
         with self._lock:
             self._execs.append(h)
         self._transcript.write(json.dumps({
